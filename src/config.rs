@@ -14,8 +14,8 @@ const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiProvider {
-    #[default]
     Gemini,
+    #[default]
     Openai,
 }
 
@@ -67,7 +67,9 @@ impl FromStr for ApiProvider {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Wire protocol used by the API server.
-    #[serde(default)]
+    // Missing `provider` means Gemini only for compatibility with config files
+    // created by versions that predate multi-provider support.
+    #[serde(default = "legacy_default_provider")]
     pub provider: ApiProvider,
 
     /// API key. It may be empty for local OpenAI-compatible servers.
@@ -95,6 +97,10 @@ fn default_max_tokens() -> u32 {
     8192
 }
 
+fn legacy_default_provider() -> ApiProvider {
+    ApiProvider::Gemini
+}
+
 fn default_temperature() -> f32 {
     0.7
 }
@@ -102,10 +108,10 @@ fn default_temperature() -> f32 {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            provider: ApiProvider::Gemini,
+            provider: ApiProvider::Openai,
             api_key: String::new(),
-            model: GEMINI_MODEL.to_string(),
-            base_url: GEMINI_BASE_URL.to_string(),
+            model: OPENAI_MODEL.to_string(),
+            base_url: OPENAI_BASE_URL.to_string(),
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
         }
@@ -137,12 +143,12 @@ impl Config {
 
             if config.api_key.is_empty() {
                 let template = r#"# Gemini CLI Configuration
-# provider can be "gemini" or "openai"
+# OpenAI-compatible protocol is the default. provider can be "openai" or "gemini".
 
-provider = "gemini"
+provider = "openai"
 api_key = ""
-model = "gemini-2.0-flash"
-base_url = "https://generativelanguage.googleapis.com/v1beta"
+model = "gpt-4o-mini"
+base_url = "https://api.openai.com/v1"
 max_tokens = 8192
 temperature = 0.7
 "#;
@@ -237,15 +243,32 @@ mod tests {
     }
 
     #[test]
-    fn changing_provider_migrates_only_provider_defaults() {
-        let mut config = Config::default();
-        config.set_provider(ApiProvider::Openai);
+    fn application_defaults_to_openai_protocol() {
+        let config = Config::default();
+        assert_eq!(config.provider, ApiProvider::Openai);
         assert_eq!(config.model, OPENAI_MODEL);
         assert_eq!(config.base_url, OPENAI_BASE_URL);
+    }
+
+    #[test]
+    fn legacy_config_without_provider_stays_on_gemini() {
+        let config: Config = toml::from_str(
+            "model = \"gemini-2.0-flash\"\nbase_url = \"https://generativelanguage.googleapis.com/v1beta\"",
+        )
+        .unwrap();
+        assert_eq!(config.provider, ApiProvider::Gemini);
+    }
+
+    #[test]
+    fn changing_provider_migrates_only_provider_defaults() {
+        let mut config = Config::default();
+        config.set_provider(ApiProvider::Gemini);
+        assert_eq!(config.model, GEMINI_MODEL);
+        assert_eq!(config.base_url, GEMINI_BASE_URL);
 
         config.model = "custom-model".to_string();
         config.base_url = "http://localhost:1234/v1".to_string();
-        config.set_provider(ApiProvider::Gemini);
+        config.set_provider(ApiProvider::Openai);
         assert_eq!(config.model, "custom-model");
         assert_eq!(config.base_url, "http://localhost:1234/v1");
     }

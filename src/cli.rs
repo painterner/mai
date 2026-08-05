@@ -2,7 +2,7 @@ use clap::Parser;
 
 use crate::config::ApiProvider;
 
-/// Gemini CLI - A fast terminal-based Gemini AI assistant
+/// A fast terminal AI assistant using an OpenAI-compatible API by default
 #[derive(Parser, Debug)]
 #[command(name = "gemini", version, about, long_about = None)]
 pub struct Args {
@@ -10,7 +10,7 @@ pub struct Args {
     #[arg(short, long)]
     pub prompt: Option<String>,
 
-    /// Model to use (e.g. gemini-2.0-flash, gemini-2.5-pro)
+    /// Model to use (e.g. gpt-4o-mini or a compatible server's model name)
     #[arg(short, long)]
     pub model: Option<String>,
 

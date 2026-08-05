@@ -1,7 +1,8 @@
 # Gemini CLI (Rust)
 
 A blazing-fast terminal-based AI assistant built with Rust + Ratatui. It supports
-both the native Gemini API and OpenAI-compatible Chat Completions APIs.
+the OpenAI-compatible Chat Completions API by default, with optional native
+Gemini API support.
 
 ## Features
 
@@ -10,7 +11,7 @@ both the native Gemini API and OpenAI-compatible Chat Completions APIs.
 - 🔄 **Streaming responses** - see AI responses appear in real-time via SSE
 - 📝 **Markdown rendering** - code blocks, headers, bold, italic, inline code
 - ⚙️ **Configurable** - TOML config file + environment variable overrides
-- 🔑 **Simple auth** - just set `GEMINI_API_KEY` and go
+- 🔑 **Simple auth** - just set `OPENAI_API_KEY` and go
 - 🔌 **Two API protocols** - native Gemini and OpenAI-compatible `/chat/completions`
 
 ## Quick Start
@@ -18,7 +19,8 @@ both the native Gemini API and OpenAI-compatible Chat Completions APIs.
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (1.85+)
-- A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
+- An API key for OpenAI or an OpenAI-compatible service (not needed for local
+  servers that do not require authentication)
 
 ### Build & Run
 
@@ -27,7 +29,7 @@ both the native Gemini API and OpenAI-compatible Chat Completions APIs.
 cargo build --release
 
 # Set your API key
-export GEMINI_API_KEY="your-api-key-here"
+export OPENAI_API_KEY="your-api-key-here"
 
 # Run interactive mode
 ./target/release/gemini
@@ -35,6 +37,18 @@ export GEMINI_API_KEY="your-api-key-here"
 # Or single prompt mode
 ./target/release/gemini -p "Explain Rust ownership in 3 sentences"
 ```
+
+Alternatively, create a local `.env` file from the included template:
+
+```bash
+cp .env.example .env
+# Edit .env, then run normally
+cargo run -- -p "Hello"
+```
+
+The CLI loads `.env` automatically at startup. Existing shell environment
+variables take precedence over values in `.env`, and `.env` is ignored by Git
+to avoid committing secrets.
 
 ### Install globally
 
@@ -63,7 +77,7 @@ gemini -p "What is the Rust borrow checker?"
 | Flag | Description |
 |------|-------------|
 | `-p, --prompt <TEXT>` | Send a single prompt (non-interactive) |
-| `-m, --model <NAME>` | Model to use (default: gemini-2.0-flash) |
+| `-m, --model <NAME>` | Model to use (default: gpt-4o-mini) |
 | `--provider <gemini\|openai>` | API protocol to use |
 | `-d, --debug` | Enable debug logging |
 
@@ -94,18 +108,18 @@ gemini -p "What is the Rust borrow checker?"
 Config file location: `~/.config/gemini-cli/config.toml`
 
 ```toml
-provider = "gemini"
+provider = "openai"
 api_key = "your-api-key"
-model = "gemini-2.0-flash"
-base_url = "https://generativelanguage.googleapis.com/v1beta"
+model = "gpt-4o-mini"
+base_url = "https://api.openai.com/v1"
 max_tokens = 8192
 temperature = 0.7
 ```
 
-### OpenAI-compatible API
+### OpenAI-compatible API (default)
 
-Set `provider = "openai"`. The client calls `{base_url}/chat/completions` and
-supports both regular and SSE streaming responses.
+The client calls `{base_url}/chat/completions` and supports both regular and SSE
+streaming responses.
 
 ```toml
 provider = "openai"
@@ -133,7 +147,20 @@ API_PROVIDER=openai OPENAI_API_KEY="your-api-key" \
   gemini --provider openai --model gpt-4o-mini -p "Hello"
 ```
 
+### Native Gemini API (optional)
+
+To use Gemini's native protocol instead, configure:
+
+```toml
+provider = "gemini"
+api_key = "your-gemini-api-key"
+model = "gemini-2.0-flash"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+```
+
 ### Environment Variables
+
+These variables can be exported by the shell or placed in `.env`:
 
 | Variable | Description |
 |----------|-------------|

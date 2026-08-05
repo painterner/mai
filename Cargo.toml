@@ -2,7 +2,7 @@
 name = "gemini-cli"
 version = "0.1.0"
 edition = "2024"
-description = "A fast Gemini CLI built with Rust + Ratatui"
+description = "A fast terminal AI client with OpenAI-compatible and Gemini APIs"
 license = "MIT"
 
 [[bin]]
@@ -32,6 +32,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Config
 dirs = "6"
+dotenvy = "0.15"
 toml = "0.8"
 
 # Markdown rendering

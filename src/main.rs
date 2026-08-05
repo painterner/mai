@@ -5,7 +5,7 @@ mod config;
 mod markdown;
 mod ui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
@@ -15,6 +15,10 @@ use crate::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load a Node.js-style .env file before reading logging or API settings.
+    // Values already present in the process environment take precedence.
+    load_dotenv()?;
+
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
@@ -47,4 +51,12 @@ async fn main() -> Result<()> {
     app.run().await?;
 
     Ok(())
+}
+
+fn load_dotenv() -> Result<()> {
+    match dotenvy::dotenv() {
+        Ok(_) => Ok(()),
+        Err(error) if error.not_found() => Ok(()),
+        Err(error) => Err(error).context("Failed to load .env file"),
+    }
 }
