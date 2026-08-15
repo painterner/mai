@@ -1,12 +1,16 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::DefaultTerminal;
+use std::fmt;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::api::{ApiClient, Message, Part};
+use crate::agent::{AgentEvent, AgentRun, AgentRunner, ToolPermissions};
+use crate::api::ApiClient;
 use crate::cli::Args;
 use crate::config::Config;
+use crate::conversation::Message;
+use crate::prompts;
 use crate::ui;
 
 /// Chat message for display
@@ -22,6 +26,60 @@ pub enum Role {
     User,
     Assistant,
     System,
+    Tool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatMode {
+    Chat,
+    Agent,
+}
+
+impl fmt::Display for ChatMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Chat => formatter.write_str("chat"),
+            Self::Agent => formatter.write_str("agent"),
+        }
+    }
+}
+
+enum ActiveResponse {
+    Chat(mpsc::Receiver<Result<String>>),
+    Agent(AgentRun),
+}
+
+enum ResponseUpdate {
+    Text(String),
+    ToolStarted(String),
+    ToolFinished { tool: String, result: String },
+    Final(String),
+    Error(anyhow::Error),
+    Disconnected,
+    Empty,
+}
+
+impl ActiveResponse {
+    fn try_recv(&mut self) -> ResponseUpdate {
+        match self {
+            Self::Chat(receiver) => match receiver.try_recv() {
+                Ok(Ok(chunk)) => ResponseUpdate::Text(chunk),
+                Ok(Err(error)) => ResponseUpdate::Error(error),
+                Err(mpsc::error::TryRecvError::Disconnected) => ResponseUpdate::Disconnected,
+                Err(mpsc::error::TryRecvError::Empty) => ResponseUpdate::Empty,
+            },
+            Self::Agent(run) => match run.try_recv() {
+                Ok(Ok(AgentEvent::ToolStarted { tool })) => ResponseUpdate::ToolStarted(tool),
+                Ok(Ok(AgentEvent::ToolFinished { tool, result })) => {
+                    ResponseUpdate::ToolFinished { tool, result }
+                }
+                Ok(Ok(AgentEvent::Final { content })) => ResponseUpdate::Final(content),
+                Ok(Err(error)) => ResponseUpdate::Error(error),
+                Err(mpsc::error::TryRecvError::Disconnected) => ResponseUpdate::Disconnected,
+                Err(mpsc::error::TryRecvError::Empty) => ResponseUpdate::Empty,
+            },
+        }
+    }
 }
 
 /// Application state
@@ -42,12 +100,16 @@ pub struct App {
     pub waiting: bool,
     /// Status message
     pub status: String,
+    /// Current interaction mode
+    pub mode: ChatMode,
     /// Config
     pub config: Config,
     /// API client
     api: ApiClient,
-    /// Stream receiver for current response
-    stream_rx: Option<mpsc::Receiver<Result<String>>>,
+    /// Agent executor
+    agent: AgentRunner,
+    /// Active chat stream or agent task
+    response: Option<ActiveResponse>,
     /// Current model name
     pub model: String,
 }
@@ -57,6 +119,17 @@ impl App {
         let model = args.model.unwrap_or_else(|| config.model.clone());
         let mut api = ApiClient::new(&config)?;
         api.set_model(&model);
+        let mode = if args.agent {
+            ChatMode::Agent
+        } else {
+            ChatMode::Chat
+        };
+        let agent = AgentRunner::in_workspace(
+            api.clone(),
+            std::env::current_dir().context("Failed to determine workspace directory")?,
+            ToolPermissions::workspace_write(args.allow_shell),
+            args.agent_max_steps,
+        )?;
 
         let mut app = Self {
             input: String::new(),
@@ -67,9 +140,11 @@ impl App {
             running: true,
             waiting: false,
             status: String::new(),
+            mode,
             config,
             api,
-            stream_rx: None,
+            agent,
+            response: None,
             model: model.clone(),
         };
 
@@ -77,10 +152,11 @@ impl App {
         app.messages.push(ChatMessage {
             role: Role::System,
             content: format!(
-                "✨ Gemini CLI v{} | Provider: {} | Model: {} | Type /help for commands",
+                "✨ Gemini CLI v{} | Provider: {} | Model: {} | Mode: {} | Type /help for commands",
                 env!("CARGO_PKG_VERSION"),
                 app.config.provider,
-                model
+                model,
+                app.mode
             ),
             is_streaming: false,
         });
@@ -101,32 +177,35 @@ impl App {
             // Draw UI
             terminal.draw(|frame| ui::draw(frame, self))?;
 
-            // Check for streaming data
-            if let Some(rx) = &mut self.stream_rx {
-                match rx.try_recv() {
-                    Ok(Ok(chunk)) => {
-                        // Append chunk to last message
-                        if let Some(last) = self.messages.last_mut()
-                            && last.role == Role::Assistant
-                            && last.is_streaming
-                        {
-                            last.content.push_str(&chunk);
-                        }
-                        continue;
-                    }
-                    Ok(Err(e)) => {
-                        // Stream error
-                        self.finish_streaming();
-                        self.status = format!("Error: {e}");
-                    }
-                    Err(mpsc::error::TryRecvError::Disconnected) => {
-                        // Stream complete
-                        self.finish_streaming();
-                    }
-                    Err(mpsc::error::TryRecvError::Empty) => {
-                        // No data yet, continue
-                    }
+            let update = self
+                .response
+                .as_mut()
+                .map(ActiveResponse::try_recv)
+                .unwrap_or(ResponseUpdate::Empty);
+            match update {
+                ResponseUpdate::Text(chunk) => {
+                    self.append_assistant_text(&chunk);
+                    continue;
                 }
+                ResponseUpdate::ToolStarted(tool) => {
+                    self.status = format!("Agent running tool: {tool}");
+                    continue;
+                }
+                ResponseUpdate::ToolFinished { tool, result } => {
+                    self.add_tool_message(&tool, &result);
+                    self.status = format!("Agent completed tool: {tool}");
+                    continue;
+                }
+                ResponseUpdate::Final(content) => {
+                    self.append_assistant_text(&content);
+                    self.finish_response();
+                    continue;
+                }
+                ResponseUpdate::Error(error) => {
+                    self.fail_response(&error);
+                }
+                ResponseUpdate::Disconnected => self.finish_response(),
+                ResponseUpdate::Empty => {}
             }
 
             // Poll for keyboard events (non-blocking)
@@ -140,22 +219,53 @@ impl App {
         Ok(())
     }
 
-    fn finish_streaming(&mut self) {
+    fn append_assistant_text(&mut self, text: &str) {
+        if let Some(last) = self.messages.last_mut()
+            && last.role == Role::Assistant
+            && last.is_streaming
+        {
+            last.content.push_str(text);
+        }
+    }
+
+    fn add_tool_message(&mut self, tool: &str, result: &str) {
+        let insert_at = self.messages.len().saturating_sub(1);
+        self.messages.insert(
+            insert_at,
+            ChatMessage {
+                role: Role::Tool,
+                content: format!("{tool}\n{}", truncate(result, 2_000)),
+                is_streaming: false,
+            },
+        );
+    }
+
+    fn finish_response(&mut self) {
         if let Some(last) = self.messages.last_mut()
             && last.is_streaming
         {
             last.is_streaming = false;
-            // Add to API history
-            self.api_history.push(Message {
-                role: "model".to_string(),
-                parts: vec![Part {
-                    text: last.content.clone(),
-                }],
-            });
+            if !last.content.is_empty() {
+                self.api_history
+                    .push(Message::assistant(last.content.clone()));
+            }
         }
-        self.stream_rx = None;
+        self.response = None;
         self.waiting = false;
         self.status = String::new();
+    }
+
+    fn fail_response(&mut self, error: &anyhow::Error) {
+        if let Some(last) = self.messages.last_mut()
+            && last.role == Role::Assistant
+            && last.is_streaming
+        {
+            last.content = format!("Error: {error}");
+            last.is_streaming = false;
+        }
+        self.response = None;
+        self.waiting = false;
+        self.status = format!("Error: {error}");
     }
 
     async fn handle_key(&mut self, key: event::KeyEvent) -> Result<()> {
@@ -164,8 +274,7 @@ impl App {
             (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
                 if self.waiting {
                     // Cancel streaming
-                    self.stream_rx = None;
-                    self.finish_streaming();
+                    self.finish_response();
                     self.status = "Cancelled.".to_string();
                 } else {
                     self.running = false;
@@ -275,12 +384,7 @@ impl App {
         });
 
         // Add to API history
-        self.api_history.push(Message {
-            role: "user".to_string(),
-            parts: vec![Part {
-                text: input.clone(),
-            }],
-        });
+        self.api_history.push(Message::user(input.clone()));
 
         // Start streaming response
         self.waiting = true;
@@ -293,21 +397,18 @@ impl App {
             is_streaming: true,
         });
 
-        match self
-            .api
-            .chat_stream(&input, &self.api_history[..self.api_history.len() - 1])
-        {
-            Ok(rx) => {
-                self.stream_rx = Some(rx);
-            }
-            Err(e) => {
-                self.waiting = false;
-                self.status = format!("Error: {e}");
-                if let Some(last) = self.messages.last_mut() {
-                    last.content = format!("❌ Error: {e}");
-                    last.is_streaming = false;
-                }
-            }
+        let response = match self.mode {
+            ChatMode::Chat => self
+                .api
+                .complete_stream(Some(prompts::chat_system()), &self.api_history)
+                .map(ActiveResponse::Chat),
+            ChatMode::Agent => Ok(ActiveResponse::Agent(
+                self.agent.start(self.api_history.clone()),
+            )),
+        };
+        match response {
+            Ok(response) => self.response = Some(response),
+            Err(error) => self.fail_response(&error),
         }
 
         Ok(())
@@ -324,6 +425,7 @@ impl App {
                         "  /help, /h     - Show this help",
                         "  /clear, /c    - Clear chat history",
                         "  /model <name> - Switch model",
+                        "  /agent on|off - Switch chat/agent mode",
                         "  /config       - Show current config",
                         "  /quit, /q     - Exit",
                     ]
@@ -345,13 +447,30 @@ impl App {
                     self.status = format!("Current model: {}", self.model);
                 }
             }
+            "/agent" | "/a" => match parts.get(1).map(|value| value.trim()) {
+                Some("on" | "agent") => {
+                    self.mode = ChatMode::Agent;
+                    self.status = "Agent mode enabled.".to_string();
+                }
+                Some("off" | "chat") => {
+                    self.mode = ChatMode::Chat;
+                    self.status = "Chat mode enabled.".to_string();
+                }
+                Some(value) => {
+                    self.status = format!("Invalid agent mode '{value}'; use on or off");
+                }
+                None => {
+                    self.status = format!("Current mode: {}", self.mode);
+                }
+            },
             "/config" => {
                 self.messages.push(ChatMessage {
                     role: Role::System,
                     content: format!(
-                        "⚙️ Configuration:\n  Provider: {}\n  Model: {}\n  Base URL: {}\n  Max tokens: {}\n  Temperature: {}",
+                        "⚙️ Configuration:\n  Provider: {}\n  Model: {}\n  Mode: {}\n  Base URL: {}\n  Max tokens: {}\n  Temperature: {}",
                         self.config.provider,
                         self.model,
+                        self.mode,
                         self.config.base_url,
                         self.config.max_tokens,
                         self.config.temperature
@@ -367,5 +486,15 @@ impl App {
             }
         }
         Ok(())
+    }
+}
+
+fn truncate(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}\n(output truncated)")
+    } else {
+        truncated
     }
 }

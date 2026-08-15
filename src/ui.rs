@@ -33,10 +33,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let title = format!(
-        " ✨ Gemini CLI v{} │ {} │ {} ",
+        " ✨ Gemini CLI v{} │ {} │ {} │ {} ",
         env!("CARGO_PKG_VERSION"),
         app.config.provider,
-        app.model
+        app.model,
+        app.mode
     );
 
     let block = Block::default()
@@ -129,6 +130,20 @@ fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
                     lines.push(Line::from(Span::styled(
                         format!("    {line}"),
                         Style::default().fg(Color::Yellow),
+                    )));
+                }
+            }
+            Role::Tool => {
+                lines.push(Line::from(Span::styled(
+                    format!(" 🔧 Tool: {}", msg.content.lines().next().unwrap_or("")),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                for line in msg.content.lines().skip(1) {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {line}"),
+                        Style::default().fg(Color::DarkGray),
                     )));
                 }
             }

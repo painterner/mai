@@ -5,24 +5,31 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::config::{ApiProvider, Config};
-
-/// A provider-neutral message in the conversation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub role: String,
-    pub parts: Vec<Part>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Part {
-    pub text: String,
-}
+use crate::conversation::{Message, Role};
 
 #[derive(Debug, Serialize)]
 struct GeminiRequest {
-    contents: Vec<Message>,
+    #[serde(rename = "systemInstruction", skip_serializing_if = "Option::is_none")]
+    system_instruction: Option<GeminiSystemInstruction>,
+    contents: Vec<GeminiMessage>,
     #[serde(rename = "generationConfig", skip_serializing_if = "Option::is_none")]
     generation_config: Option<GeminiGenerationConfig>,
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiSystemInstruction {
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiMessage {
+    role: String,
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiPart {
+    text: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -111,6 +118,7 @@ struct OpenAiDelta {
     content: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct ApiClient {
     client: reqwest::Client,
     provider: ApiProvider,
@@ -149,32 +157,34 @@ impl ApiClient {
         self.model = model.to_string();
     }
 
-    pub async fn chat(&self, prompt: &str, history: &[Message]) -> Result<String> {
+    pub async fn complete(
+        &self,
+        system_prompt: Option<&str>,
+        messages: &[Message],
+    ) -> Result<String> {
         match self.provider {
-            ApiProvider::Gemini => self.chat_gemini(prompt, history).await,
-            ApiProvider::Openai => self.chat_openai(prompt, history).await,
+            ApiProvider::Gemini => self.complete_gemini(system_prompt, messages).await,
+            ApiProvider::Openai => self.complete_openai(system_prompt, messages).await,
         }
     }
 
-    pub fn chat_stream(
+    pub fn complete_stream(
         &self,
-        prompt: &str,
-        history: &[Message],
+        system_prompt: Option<&str>,
+        messages: &[Message],
     ) -> Result<tokio::sync::mpsc::Receiver<Result<String>>> {
         match self.provider {
-            ApiProvider::Gemini => self.chat_stream_gemini(prompt, history),
-            ApiProvider::Openai => self.chat_stream_openai(prompt, history),
+            ApiProvider::Gemini => self.complete_stream_gemini(system_prompt, messages),
+            ApiProvider::Openai => self.complete_stream_openai(system_prompt, messages),
         }
     }
 
-    async fn chat_gemini(&self, prompt: &str, history: &[Message]) -> Result<String> {
-        let request = GeminiRequest {
-            contents: with_prompt(history, prompt),
-            generation_config: Some(GeminiGenerationConfig {
-                max_output_tokens: Some(self.max_tokens),
-                temperature: Some(self.temperature),
-            }),
-        };
+    async fn complete_gemini(
+        &self,
+        system_prompt: Option<&str>,
+        messages: &[Message],
+    ) -> Result<String> {
+        let request = self.gemini_request(system_prompt, messages);
         let endpoint = format!("{}/models/{}:generateContent", self.base_url, self.model);
         debug!("Sending Gemini request to: {}", endpoint);
 
@@ -204,18 +214,12 @@ impl ApiClient {
         Ok(gemini_text(body.candidates))
     }
 
-    fn chat_stream_gemini(
+    fn complete_stream_gemini(
         &self,
-        prompt: &str,
-        history: &[Message],
+        system_prompt: Option<&str>,
+        messages: &[Message],
     ) -> Result<tokio::sync::mpsc::Receiver<Result<String>>> {
-        let request = GeminiRequest {
-            contents: with_prompt(history, prompt),
-            generation_config: Some(GeminiGenerationConfig {
-                max_output_tokens: Some(self.max_tokens),
-                temperature: Some(self.temperature),
-            }),
-        };
+        let request = self.gemini_request(system_prompt, messages);
         let endpoint = format!(
             "{}/models/{}:streamGenerateContent",
             self.base_url, self.model
@@ -271,8 +275,12 @@ impl ApiClient {
         Ok(rx)
     }
 
-    async fn chat_openai(&self, prompt: &str, history: &[Message]) -> Result<String> {
-        let request = self.openai_request(prompt, history, false);
+    async fn complete_openai(
+        &self,
+        system_prompt: Option<&str>,
+        messages: &[Message],
+    ) -> Result<String> {
+        let request = self.openai_request(system_prompt, messages, false);
         let endpoint = format!("{}/chat/completions", self.base_url);
         debug!("Sending OpenAI-compatible request to: {}", endpoint);
 
@@ -308,12 +316,12 @@ impl ApiClient {
             .unwrap_or_default())
     }
 
-    fn chat_stream_openai(
+    fn complete_stream_openai(
         &self,
-        prompt: &str,
-        history: &[Message],
+        system_prompt: Option<&str>,
+        messages: &[Message],
     ) -> Result<tokio::sync::mpsc::Receiver<Result<String>>> {
-        let request = self.openai_request(prompt, history, true);
+        let request = self.openai_request(system_prompt, messages, true);
         let endpoint = format!("{}/chat/completions", self.base_url);
         let (tx, rx) = tokio::sync::mpsc::channel(32);
         let req = openai_auth(self.client.post(endpoint), &self.api_key).json(&request);
@@ -380,31 +388,44 @@ impl ApiClient {
         Ok(rx)
     }
 
-    fn openai_request(&self, prompt: &str, history: &[Message], stream: bool) -> OpenAiRequest {
-        let mut messages = history.iter().map(to_openai_message).collect::<Vec<_>>();
-        messages.push(OpenAiMessage {
-            role: "user".to_string(),
-            content: prompt.to_string(),
-        });
+    fn gemini_request(&self, system_prompt: Option<&str>, messages: &[Message]) -> GeminiRequest {
+        GeminiRequest {
+            system_instruction: system_prompt.map(|prompt| GeminiSystemInstruction {
+                parts: vec![GeminiPart {
+                    text: prompt.to_string(),
+                }],
+            }),
+            contents: messages.iter().map(to_gemini_message).collect(),
+            generation_config: Some(GeminiGenerationConfig {
+                max_output_tokens: Some(self.max_tokens),
+                temperature: Some(self.temperature),
+            }),
+        }
+    }
+
+    fn openai_request(
+        &self,
+        system_prompt: Option<&str>,
+        messages: &[Message],
+        stream: bool,
+    ) -> OpenAiRequest {
+        let mut request_messages =
+            Vec::with_capacity(messages.len() + usize::from(system_prompt.is_some()));
+        if let Some(prompt) = system_prompt {
+            request_messages.push(OpenAiMessage {
+                role: "system".to_string(),
+                content: prompt.to_string(),
+            });
+        }
+        request_messages.extend(messages.iter().map(to_openai_message));
         OpenAiRequest {
             model: self.model.clone(),
-            messages,
+            messages: request_messages,
             max_tokens: self.max_tokens,
             temperature: self.temperature,
             stream,
         }
     }
-}
-
-fn with_prompt(history: &[Message], prompt: &str) -> Vec<Message> {
-    let mut contents = history.to_vec();
-    contents.push(Message {
-        role: "user".to_string(),
-        parts: vec![Part {
-            text: prompt.to_string(),
-        }],
-    });
-    contents
 }
 
 fn openai_auth(request: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
@@ -417,16 +438,23 @@ fn openai_auth(request: reqwest::RequestBuilder, api_key: &str) -> reqwest::Requ
 
 fn to_openai_message(message: &Message) -> OpenAiMessage {
     OpenAiMessage {
-        role: match message.role.as_str() {
-            "model" => "assistant".to_string(),
-            role => role.to_string(),
+        role: match message.role {
+            Role::User => "user".to_string(),
+            Role::Assistant => "assistant".to_string(),
         },
-        content: message
-            .parts
-            .iter()
-            .map(|part| part.text.as_str())
-            .collect::<Vec<_>>()
-            .join(""),
+        content: message.content.clone(),
+    }
+}
+
+fn to_gemini_message(message: &Message) -> GeminiMessage {
+    GeminiMessage {
+        role: match message.role {
+            Role::User => "user".to_string(),
+            Role::Assistant => "model".to_string(),
+        },
+        parts: vec![GeminiPart {
+            text: message.content.clone(),
+        }],
     }
 }
 
@@ -450,16 +478,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_gemini_model_role_to_openai_assistant() {
-        let message = Message {
-            role: "model".to_string(),
-            parts: vec![Part {
-                text: "hello".to_string(),
-            }],
-        };
+    fn maps_assistant_role_for_each_provider() {
+        let message = Message::assistant("hello");
         let mapped = to_openai_message(&message);
         assert_eq!(mapped.role, "assistant");
         assert_eq!(mapped.content, "hello");
+
+        let mapped = to_gemini_message(&message);
+        assert_eq!(mapped.role, "model");
+        assert_eq!(mapped.parts[0].text, "hello");
     }
 
     #[test]
@@ -485,19 +512,30 @@ mod tests {
         config.set_provider(ApiProvider::Openai);
         config.model = "test-model".to_string();
         let client = ApiClient::new(&config).unwrap();
-        let history = vec![Message {
-            role: "model".to_string(),
-            parts: vec![Part {
-                text: "previous".to_string(),
-            }],
-        }];
+        let messages = vec![Message::assistant("previous"), Message::user("next")];
 
-        let value = serde_json::to_value(client.openai_request("next", &history, true)).unwrap();
+        let value =
+            serde_json::to_value(client.openai_request(Some("Be concise."), &messages, true))
+                .unwrap();
         assert_eq!(value["model"], "test-model");
         assert_eq!(value["stream"], true);
-        assert_eq!(value["messages"][0]["role"], "assistant");
-        assert_eq!(value["messages"][0]["content"], "previous");
-        assert_eq!(value["messages"][1]["role"], "user");
-        assert_eq!(value["messages"][1]["content"], "next");
+        assert_eq!(value["messages"][0]["role"], "system");
+        assert_eq!(value["messages"][0]["content"], "Be concise.");
+        assert_eq!(value["messages"][1]["role"], "assistant");
+        assert_eq!(value["messages"][1]["content"], "previous");
+        assert_eq!(value["messages"][2]["role"], "user");
+        assert_eq!(value["messages"][2]["content"], "next");
+    }
+
+    #[test]
+    fn builds_gemini_request_with_system_instruction() {
+        let config = Config::default();
+        let client = ApiClient::new(&config).unwrap();
+        let request = client.gemini_request(Some("Use tools."), &[Message::user("work")]);
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(value["systemInstruction"]["parts"][0]["text"], "Use tools.");
+        assert_eq!(value["contents"][0]["role"], "user");
+        assert_eq!(value["contents"][0]["parts"][0]["text"], "work");
     }
 }

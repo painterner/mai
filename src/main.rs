@@ -1,17 +1,14 @@
-mod api;
-mod app;
-mod cli;
-mod config;
-mod markdown;
-mod ui;
-
 use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use crate::app::App;
-use crate::cli::Args;
-use crate::config::Config;
+use gemini_cli::agent::{AgentRunner, ToolPermissions};
+use gemini_cli::api::ApiClient;
+use gemini_cli::app::App;
+use gemini_cli::cli::Args;
+use gemini_cli::config::Config;
+use gemini_cli::conversation::Message;
+use gemini_cli::prompts;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,8 +37,21 @@ async fn main() -> Result<()> {
     // Handle non-interactive commands
     if let Some(prompt) = &args.prompt {
         // Non-interactive: single prompt mode
-        let api = api::ApiClient::new(&config)?;
-        let response = api.chat(prompt, &[]).await?;
+        let api = ApiClient::new(&config)?;
+        let messages = vec![Message::user(prompt)];
+        let response = if args.agent {
+            AgentRunner::in_workspace(
+                api,
+                std::env::current_dir().context("Failed to determine workspace directory")?,
+                ToolPermissions::workspace_write(args.allow_shell),
+                args.agent_max_steps,
+            )?
+            .run(messages)
+            .await?
+        } else {
+            api.complete(Some(prompts::chat_system()), &messages)
+                .await?
+        };
         println!("{response}");
         return Ok(());
     }

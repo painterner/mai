@@ -10,6 +10,7 @@ Gemini API support.
 - 💬 **Interactive TUI** with Ratatui - full terminal UI with scrolling, colors, and keyboard navigation
 - 🔄 **Streaming responses** - see AI responses appear in real-time via SSE
 - 📝 **Markdown rendering** - code blocks, headers, bold, italic, inline code
+- 🤖 **Agent mode** - inspect, search, and edit files through a bounded tool loop
 - ⚙️ **Configurable** - TOML config file + environment variable overrides
 - 🔑 **Simple auth** - just set `OPENAI_API_KEY` and go
 - 🔌 **Two API protocols** - native Gemini and OpenAI-compatible `/chat/completions`
@@ -36,6 +37,9 @@ export OPENAI_API_KEY="your-api-key-here"
 
 # Or single prompt mode
 ./target/release/gemini -p "Explain Rust ownership in 3 sentences"
+
+# Run an agent task against the current workspace
+./target/release/gemini --agent -p "Inspect the project and update its README"
 ```
 
 Alternatively, create a local `.env` file from the included template:
@@ -72,6 +76,35 @@ Opens a full TUI chat interface. Type messages and press Enter to send.
 gemini -p "What is the Rust borrow checker?"
 ```
 
+### Agent Mode
+
+Agent mode gives the model a reusable tool loop for the current working
+directory:
+
+```bash
+# File inspection, search, and workspace edits
+gemini --agent -p "Find duplicated error handling and refactor it"
+
+# Also allow build and test commands
+gemini --agent --allow-shell -p "Fix the failing tests and verify the result"
+
+# Limit the number of model/tool turns
+gemini --agent --agent-max-steps 6 -p "Summarize this project"
+```
+
+The default tools are `list_files`, `read_file`, `search_files`, `write_file`,
+and `replace_in_file`. File paths are restricted to the current workspace;
+absolute paths, parent traversal, and symlink escapes are rejected.
+
+Shell execution is disabled by default. `--allow-shell` enables
+`run_command`, which can execute arbitrary commands with the same permissions
+as the CLI and is not an operating-system sandbox. Enable it only for a
+workspace and model you trust.
+
+In interactive mode, start with `gemini --agent` or switch at runtime with
+`/agent on` and `/agent off`. Tool results are shown separately from the model
+conversation.
+
 ### CLI Options
 
 | Flag | Description |
@@ -79,6 +112,9 @@ gemini -p "What is the Rust borrow checker?"
 | `-p, --prompt <TEXT>` | Send a single prompt (non-interactive) |
 | `-m, --model <NAME>` | Model to use (default: gpt-4o-mini) |
 | `--provider <gemini\|openai>` | API protocol to use |
+| `--agent` | Enable workspace Agent mode |
+| `--agent-max-steps <N>` | Maximum model/tool turns (default: 12) |
+| `--allow-shell` | Allow Agent mode to run shell commands |
 | `-d, --debug` | Enable debug logging |
 
 ### Slash Commands (Interactive Mode)
@@ -88,6 +124,7 @@ gemini -p "What is the Rust borrow checker?"
 | `/help`, `/h` | Show available commands |
 | `/clear`, `/c` | Clear chat history |
 | `/model <name>`, `/m` | Switch model |
+| `/agent on\|off`, `/a on\|off` | Switch between Agent and chat modes |
 | `/config` | Show current configuration |
 | `/quit`, `/q` | Exit |
 
@@ -175,15 +212,32 @@ These variables can be exported by the shell or placed in `.env`:
 ## Project Structure
 
 ```
+prompts/
+├── chat_system.md      # Normal chat system prompt
+├── agent_system.md     # Agent behavior and action protocol
+├── tool_result.md      # Tool-result continuation prompt
+└── protocol_error.md   # Invalid-action recovery prompt
 src/
-├── main.rs       # Entry point, CLI argument handling
-├── cli.rs        # Clap CLI argument definitions
-├── config.rs     # TOML config loading + env overrides
-├── api.rs        # Gemini + OpenAI-compatible clients (streaming + non-streaming)
-├── app.rs        # Application state & event loop
-├── ui.rs         # Ratatui TUI rendering
-└── markdown.rs   # Markdown → styled terminal text
+├── agent/
+│   ├── mod.rs          # Public Agent API
+│   ├── protocol.rs     # Structured model-action parsing
+│   ├── runner.rs       # Reusable model/tool execution loop
+│   └── tools.rs        # Workspace tools and permission boundary
+├── lib.rs              # Reusable library surface
+├── main.rs             # Binary entry point and mode selection
+├── conversation.rs     # Provider-neutral message types
+├── prompts.rs          # Compile-time Prompt resource loader
+├── cli.rs              # Clap CLI argument definitions
+├── config.rs           # TOML config loading + env overrides
+├── api.rs              # Gemini + OpenAI-compatible API adapter
+├── app.rs              # Application state and event loop
+├── ui.rs               # Ratatui TUI rendering
+└── markdown.rs         # Markdown to styled terminal text
 ```
+
+The crate exposes `ApiClient`, `Message`, `AgentRunner`, `CompletionBackend`,
+and the tool registry for reuse. Prompt files are embedded at compile time, so
+rebuild the binary after changing them.
 
 ## License
 
