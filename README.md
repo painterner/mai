@@ -105,6 +105,17 @@ In interactive mode, start with `gemini --agent` or switch at runtime with
 `/agent on` and `/agent off`. Tool results are shown separately from the model
 conversation.
 
+The input border has two clickable segmented controls in its upper-right
+corner:
+
+- `Chat / Agent` switches the conversation mode.
+- `Auto / Manual` controls tool approval. Auto executes Agent tool calls
+  immediately. Manual pauses before every tool call and replaces the mode
+  controls with clickable `Approve / Reject` actions.
+
+Mode controls are disabled while a response is running. Manual approval is an
+interactive TUI feature; single-prompt Agent runs remain automatic.
+
 ### CLI Options
 
 | Flag | Description |
@@ -125,6 +136,7 @@ conversation.
 | `/clear`, `/c` | Clear chat history |
 | `/model <name>`, `/m` | Switch model |
 | `/agent on\|off`, `/a on\|off` | Switch between Agent and chat modes |
+| `/approval auto\|manual` | Set Agent tool approval behavior |
 | `/config` | Show current configuration |
 | `/quit`, `/q` | Exit |
 
@@ -133,12 +145,19 @@ conversation.
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
+| `F2` | Switch between Chat and Agent |
+| `F3` | Switch between Auto and Manual approval |
+| `Enter` / `Y` | Approve a pending Manual tool call |
+| `Esc` / `N` | Reject a pending Manual tool call |
 | `Ctrl+C` | Cancel stream / Quit |
 | `Ctrl+D` | Quit |
 | `Ctrl+U` | Clear input |
 | `Ctrl+A` | Move cursor to start |
 | `Ctrl+E` | Move cursor to end |
 | `PageUp/Down` | Scroll messages |
+
+The mouse can click all input-border controls and use the wheel to scroll the
+conversation.
 
 ## Configuration
 

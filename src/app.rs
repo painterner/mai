@@ -1,11 +1,17 @@
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use ratatui::DefaultTerminal;
+use crossterm::{
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
+        MouseEvent, MouseEventKind,
+    },
+    execute,
+};
+use ratatui::{DefaultTerminal, layout::Rect};
 use std::fmt;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::agent::{AgentEvent, AgentRun, AgentRunner, ToolPermissions};
+use crate::agent::{AgentEvent, AgentRun, AgentRunner, ApprovalMode, ToolPermissions};
 use crate::api::ApiClient;
 use crate::cli::Args;
 use crate::config::Config;
@@ -44,6 +50,12 @@ impl fmt::Display for ChatMode {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingApproval {
+    pub tool: String,
+    pub arguments: String,
+}
+
 enum ActiveResponse {
     Chat(mpsc::Receiver<Result<String>>),
     Agent(AgentRun),
@@ -51,8 +63,15 @@ enum ActiveResponse {
 
 enum ResponseUpdate {
     Text(String),
+    ToolApprovalRequested {
+        tool: String,
+        arguments: serde_json::Value,
+    },
     ToolStarted(String),
-    ToolFinished { tool: String, result: String },
+    ToolFinished {
+        tool: String,
+        result: String,
+    },
     Final(String),
     Error(anyhow::Error),
     Disconnected,
@@ -69,6 +88,9 @@ impl ActiveResponse {
                 Err(mpsc::error::TryRecvError::Empty) => ResponseUpdate::Empty,
             },
             Self::Agent(run) => match run.try_recv() {
+                Ok(Ok(AgentEvent::ToolApprovalRequested { tool, arguments })) => {
+                    ResponseUpdate::ToolApprovalRequested { tool, arguments }
+                }
                 Ok(Ok(AgentEvent::ToolStarted { tool })) => ResponseUpdate::ToolStarted(tool),
                 Ok(Ok(AgentEvent::ToolFinished { tool, result })) => {
                     ResponseUpdate::ToolFinished { tool, result }
@@ -102,6 +124,10 @@ pub struct App {
     pub status: String,
     /// Current interaction mode
     pub mode: ChatMode,
+    /// Tool execution approval mode
+    pub approval_mode: ApprovalMode,
+    /// Tool call currently waiting for manual approval
+    pub pending_approval: Option<PendingApproval>,
     /// Config
     pub config: Config,
     /// API client
@@ -141,6 +167,8 @@ impl App {
             waiting: false,
             status: String::new(),
             mode,
+            approval_mode: ApprovalMode::Auto,
+            pending_approval: None,
             config,
             api,
             agent,
@@ -152,11 +180,12 @@ impl App {
         app.messages.push(ChatMessage {
             role: Role::System,
             content: format!(
-                "✨ Gemini CLI v{} | Provider: {} | Model: {} | Mode: {} | Type /help for commands",
+                "✨ Gemini CLI v{} | Provider: {} | Model: {} | Mode: {} / {} | Type /help for commands",
                 env!("CARGO_PKG_VERSION"),
                 app.config.provider,
                 model,
-                app.mode
+                app.mode,
+                app.approval_mode
             ),
             is_streaming: false,
         });
@@ -167,9 +196,16 @@ impl App {
     /// Main application loop
     pub async fn run(&mut self) -> Result<()> {
         let mut terminal = ratatui::init();
+        if let Err(error) = execute!(std::io::stdout(), EnableMouseCapture) {
+            ratatui::restore();
+            return Err(error).context("Failed to enable terminal mouse capture");
+        }
         let result = self.event_loop(&mut terminal).await;
+        let mouse_result = execute!(std::io::stdout(), DisableMouseCapture)
+            .context("Failed to disable terminal mouse capture");
         ratatui::restore();
-        result
+        result?;
+        mouse_result
     }
 
     async fn event_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -185,6 +221,15 @@ impl App {
             match update {
                 ResponseUpdate::Text(chunk) => {
                     self.append_assistant_text(&chunk);
+                    continue;
+                }
+                ResponseUpdate::ToolApprovalRequested { tool, arguments } => {
+                    self.status = format!("Approve {tool}? Enter/Y: approve | Esc/N: reject");
+                    self.pending_approval = Some(PendingApproval {
+                        tool,
+                        arguments: serde_json::to_string_pretty(&arguments)
+                            .unwrap_or_else(|_| arguments.to_string()),
+                    });
                     continue;
                 }
                 ResponseUpdate::ToolStarted(tool) => {
@@ -209,10 +254,12 @@ impl App {
             }
 
             // Poll for keyboard events (non-blocking)
-            if event::poll(Duration::from_millis(16))?
-                && let Event::Key(key) = event::read()?
-            {
-                self.handle_key(key).await?;
+            if event::poll(Duration::from_millis(16))? {
+                match event::read()? {
+                    Event::Key(key) => self.handle_key(key).await?,
+                    Event::Mouse(mouse) => self.handle_mouse(mouse)?,
+                    _ => {}
+                }
             }
         }
 
@@ -251,6 +298,7 @@ impl App {
             }
         }
         self.response = None;
+        self.pending_approval = None;
         self.waiting = false;
         self.status = String::new();
     }
@@ -264,8 +312,100 @@ impl App {
             last.is_streaming = false;
         }
         self.response = None;
+        self.pending_approval = None;
         self.waiting = false;
         self.status = format!("Error: {error}");
+    }
+
+    pub fn set_chat_mode(&mut self, mode: ChatMode) {
+        if self.waiting {
+            self.status = "Cannot switch mode while a response is running.".to_string();
+            return;
+        }
+        self.mode = mode;
+        self.status = format!("{} mode enabled.", capitalize(&mode.to_string()));
+    }
+
+    pub fn toggle_chat_mode(&mut self) {
+        let mode = match self.mode {
+            ChatMode::Chat => ChatMode::Agent,
+            ChatMode::Agent => ChatMode::Chat,
+        };
+        self.set_chat_mode(mode);
+    }
+
+    pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
+        if self.waiting {
+            self.status = "Cannot switch approval mode while a response is running.".to_string();
+            return;
+        }
+        self.approval_mode = mode;
+        self.status = format!("Tool approval mode: {mode}.");
+    }
+
+    pub fn toggle_approval_mode(&mut self) {
+        let mode = match self.approval_mode {
+            ApprovalMode::Auto => ApprovalMode::Manual,
+            ApprovalMode::Manual => ApprovalMode::Auto,
+        };
+        self.set_approval_mode(mode);
+    }
+
+    pub fn respond_to_pending_approval(&mut self, approved: bool) {
+        let Some(pending) = self.pending_approval.as_ref() else {
+            return;
+        };
+        let tool = pending.tool.clone();
+        let Some(ActiveResponse::Agent(run)) = self.response.as_ref() else {
+            self.status = "No active agent is waiting for approval.".to_string();
+            return;
+        };
+
+        match run.respond_to_approval(approved) {
+            Ok(()) => {
+                self.pending_approval = None;
+                self.status = if approved {
+                    format!("Approved tool: {tool}")
+                } else {
+                    format!("Rejected tool: {tool}")
+                };
+            }
+            Err(error) => {
+                self.status = format!("Failed to respond to approval: {error}");
+            }
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.scroll_offset = self.scroll_offset.saturating_add(3);
+            }
+            MouseEventKind::ScrollDown => {
+                self.scroll_offset = self.scroll_offset.saturating_sub(3);
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let (width, height) =
+                    crossterm::terminal::size().context("Failed to read terminal dimensions")?;
+                let frame_area = Rect::new(0, 0, width, height);
+                match ui::input_control_at(
+                    frame_area,
+                    mouse.column,
+                    mouse.row,
+                    self.pending_approval.is_some(),
+                ) {
+                    Some(ui::InputControl::Chat) => self.set_chat_mode(ChatMode::Chat),
+                    Some(ui::InputControl::Agent) => self.set_chat_mode(ChatMode::Agent),
+                    Some(ui::InputControl::Auto) => self.set_approval_mode(ApprovalMode::Auto),
+                    Some(ui::InputControl::Manual) => self.set_approval_mode(ApprovalMode::Manual),
+                    Some(ui::InputControl::Approve) => self.respond_to_pending_approval(true),
+                    Some(ui::InputControl::Reject) => self.respond_to_pending_approval(false),
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     async fn handle_key(&mut self, key: event::KeyEvent) -> Result<()> {
@@ -283,6 +423,18 @@ impl App {
             (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
                 self.running = false;
             }
+
+            // Manual tool approval
+            (_, KeyCode::Enter | KeyCode::Char('y')) if self.pending_approval.is_some() => {
+                self.respond_to_pending_approval(true);
+            }
+            (_, KeyCode::Esc | KeyCode::Char('n')) if self.pending_approval.is_some() => {
+                self.respond_to_pending_approval(false);
+            }
+
+            // Mode shortcuts
+            (_, KeyCode::F(2)) => self.toggle_chat_mode(),
+            (_, KeyCode::F(3)) => self.toggle_approval_mode(),
 
             // Submit input
             (_, KeyCode::Enter) => {
@@ -304,11 +456,11 @@ impl App {
             }
 
             // Input editing
-            (_, KeyCode::Char(c)) => {
+            (_, KeyCode::Char(c)) if !self.waiting => {
                 self.input.insert(self.cursor_pos, c);
                 self.cursor_pos += c.len_utf8();
             }
-            (_, KeyCode::Backspace) => {
+            (_, KeyCode::Backspace) if !self.waiting => {
                 if self.cursor_pos > 0 {
                     let prev = self.input[..self.cursor_pos]
                         .chars()
@@ -319,12 +471,12 @@ impl App {
                     self.input.remove(self.cursor_pos);
                 }
             }
-            (_, KeyCode::Delete) => {
+            (_, KeyCode::Delete) if !self.waiting => {
                 if self.cursor_pos < self.input.len() {
                     self.input.remove(self.cursor_pos);
                 }
             }
-            (_, KeyCode::Left) => {
+            (_, KeyCode::Left) if !self.waiting => {
                 if self.cursor_pos > 0 {
                     let prev = self.input[..self.cursor_pos]
                         .chars()
@@ -334,7 +486,7 @@ impl App {
                     self.cursor_pos -= prev;
                 }
             }
-            (_, KeyCode::Right) => {
+            (_, KeyCode::Right) if !self.waiting => {
                 if self.cursor_pos < self.input.len() {
                     let next = self.input[self.cursor_pos..]
                         .chars()
@@ -344,10 +496,10 @@ impl App {
                     self.cursor_pos += next;
                 }
             }
-            (_, KeyCode::Home) => {
+            (_, KeyCode::Home) if !self.waiting => {
                 self.cursor_pos = 0;
             }
-            (_, KeyCode::End) => {
+            (_, KeyCode::End) if !self.waiting => {
                 self.cursor_pos = self.input.len();
             }
 
@@ -403,7 +555,8 @@ impl App {
                 .complete_stream(Some(prompts::chat_system()), &self.api_history)
                 .map(ActiveResponse::Chat),
             ChatMode::Agent => Ok(ActiveResponse::Agent(
-                self.agent.start(self.api_history.clone()),
+                self.agent
+                    .start_with_approval(self.api_history.clone(), self.approval_mode),
             )),
         };
         match response {
@@ -426,6 +579,7 @@ impl App {
                         "  /clear, /c    - Clear chat history",
                         "  /model <name> - Switch model",
                         "  /agent on|off - Switch chat/agent mode",
+                        "  /approval auto|manual - Set tool approval mode",
                         "  /config       - Show current config",
                         "  /quit, /q     - Exit",
                     ]
@@ -448,14 +602,8 @@ impl App {
                 }
             }
             "/agent" | "/a" => match parts.get(1).map(|value| value.trim()) {
-                Some("on" | "agent") => {
-                    self.mode = ChatMode::Agent;
-                    self.status = "Agent mode enabled.".to_string();
-                }
-                Some("off" | "chat") => {
-                    self.mode = ChatMode::Chat;
-                    self.status = "Chat mode enabled.".to_string();
-                }
+                Some("on" | "agent") => self.set_chat_mode(ChatMode::Agent),
+                Some("off" | "chat") => self.set_chat_mode(ChatMode::Chat),
                 Some(value) => {
                     self.status = format!("Invalid agent mode '{value}'; use on or off");
                 }
@@ -463,14 +611,25 @@ impl App {
                     self.status = format!("Current mode: {}", self.mode);
                 }
             },
+            "/approval" => match parts.get(1).map(|value| value.trim()) {
+                Some("auto") => self.set_approval_mode(ApprovalMode::Auto),
+                Some("manual") => self.set_approval_mode(ApprovalMode::Manual),
+                Some(value) => {
+                    self.status = format!("Invalid approval mode '{value}'; use auto or manual");
+                }
+                None => {
+                    self.status = format!("Current approval mode: {}", self.approval_mode);
+                }
+            },
             "/config" => {
                 self.messages.push(ChatMessage {
                     role: Role::System,
                     content: format!(
-                        "⚙️ Configuration:\n  Provider: {}\n  Model: {}\n  Mode: {}\n  Base URL: {}\n  Max tokens: {}\n  Temperature: {}",
+                        "⚙️ Configuration:\n  Provider: {}\n  Model: {}\n  Mode: {}\n  Approval: {}\n  Base URL: {}\n  Max tokens: {}\n  Temperature: {}",
                         self.config.provider,
                         self.model,
                         self.mode,
+                        self.approval_mode,
                         self.config.base_url,
                         self.config.max_tokens,
                         self.config.temperature
@@ -486,6 +645,14 @@ impl App {
             }
         }
         Ok(())
+    }
+}
+
+fn capitalize(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }
 

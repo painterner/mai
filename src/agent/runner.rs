@@ -1,9 +1,11 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::{fmt, result};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -31,8 +33,25 @@ impl CompletionBackend for ApiClient {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ApprovalMode {
+    #[default]
+    Auto,
+    Manual,
+}
+
+impl fmt::Display for ApprovalMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auto => formatter.write_str("auto"),
+            Self::Manual => formatter.write_str("manual"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
+    ToolApprovalRequested { tool: String, arguments: Value },
     ToolStarted { tool: String },
     ToolFinished { tool: String, result: String },
     Final { content: String },
@@ -40,14 +59,19 @@ pub enum AgentEvent {
 
 pub struct AgentRun {
     receiver: mpsc::Receiver<Result<AgentEvent>>,
+    approval_sender: mpsc::Sender<bool>,
     task: JoinHandle<()>,
 }
 
 impl AgentRun {
-    pub fn try_recv(
-        &mut self,
-    ) -> std::result::Result<Result<AgentEvent>, mpsc::error::TryRecvError> {
+    pub fn try_recv(&mut self) -> result::Result<Result<AgentEvent>, mpsc::error::TryRecvError> {
         self.receiver.try_recv()
+    }
+
+    pub fn respond_to_approval(&self, approved: bool) -> Result<()> {
+        self.approval_sender
+            .try_send(approved)
+            .context("Agent is not waiting for tool approval")
     }
 }
 
@@ -97,32 +121,59 @@ impl AgentRunner {
     }
 
     pub fn start(&self, messages: Vec<Message>) -> AgentRun {
+        self.start_with_approval(messages, ApprovalMode::Auto)
+    }
+
+    pub fn start_with_approval(
+        &self,
+        messages: Vec<Message>,
+        approval_mode: ApprovalMode,
+    ) -> AgentRun {
         let (sender, receiver) = mpsc::channel(32);
+        let (approval_sender, mut approval_receiver) = mpsc::channel(1);
         let runner = self.clone();
         let task = tokio::spawn(async move {
-            if let Err(error) = runner.run_with_events(messages, &sender).await {
+            if let Err(error) = runner
+                .run_with_events(messages, approval_mode, &sender, &mut approval_receiver)
+                .await
+            {
                 let _ = sender.send(Err(error)).await;
             }
         });
-        AgentRun { receiver, task }
+        AgentRun {
+            receiver,
+            approval_sender,
+            task,
+        }
     }
 
     pub async fn run(&self, messages: Vec<Message>) -> Result<String> {
-        self.run_loop(messages, None).await
+        self.run_loop(messages, ApprovalMode::Auto, None, None)
+            .await
     }
 
     async fn run_with_events(
         &self,
         messages: Vec<Message>,
+        approval_mode: ApprovalMode,
         sender: &mpsc::Sender<Result<AgentEvent>>,
+        approval_receiver: &mut mpsc::Receiver<bool>,
     ) -> Result<String> {
-        self.run_loop(messages, Some(sender)).await
+        self.run_loop(
+            messages,
+            approval_mode,
+            Some(sender),
+            Some(approval_receiver),
+        )
+        .await
     }
 
     async fn run_loop(
         &self,
         mut messages: Vec<Message>,
+        approval_mode: ApprovalMode,
         sender: Option<&mpsc::Sender<Result<AgentEvent>>>,
+        mut approval_receiver: Option<&mut mpsc::Receiver<bool>>,
     ) -> Result<String> {
         if messages.is_empty() {
             bail!("Agent requires at least one user message");
@@ -145,10 +196,33 @@ impl AgentRunner {
 
             match action {
                 AgentAction::ToolCall { tool, arguments } => {
-                    send_event(sender, AgentEvent::ToolStarted { tool: tool.clone() }).await;
-                    let result = match self.tools.execute(&tool, arguments).await {
-                        Ok(result) => result,
-                        Err(error) => format!("ERROR: {error:#}"),
+                    let approved = if approval_mode == ApprovalMode::Manual {
+                        send_event(
+                            sender,
+                            AgentEvent::ToolApprovalRequested {
+                                tool: tool.clone(),
+                                arguments: arguments.clone(),
+                            },
+                        )
+                        .await;
+                        approval_receiver
+                            .as_mut()
+                            .context("Manual approval requires an approval channel")?
+                            .recv()
+                            .await
+                            .context("Tool approval channel closed")?
+                    } else {
+                        true
+                    };
+
+                    let result = if approved {
+                        send_event(sender, AgentEvent::ToolStarted { tool: tool.clone() }).await;
+                        match self.tools.execute(&tool, arguments).await {
+                            Ok(result) => result,
+                            Err(error) => format!("ERROR: {error:#}"),
+                        }
+                    } else {
+                        "DECLINED: The user rejected this tool call.".to_string()
                     };
                     send_event(
                         sender,
@@ -296,6 +370,82 @@ mod tests {
                 .unwrap()
                 .content
                 .contains("not a valid agent action")
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_mode_waits_for_approval_before_running_tool() {
+        let workspace = TestWorkspace::new();
+        let backend = MockBackend::new(&[
+            r#"{"type":"tool_call","tool":"write_file","arguments":{"path":"result.txt","content":"approved"}}"#,
+            r#"{"type":"final","content":"done"}"#,
+        ]);
+        let tools =
+            ToolRegistry::new(&workspace.0, ToolPermissions::workspace_write(false)).unwrap();
+        let runner = AgentRunner::new(backend, tools, 3).unwrap();
+        let mut run =
+            runner.start_with_approval(vec![Message::user("Create a file")], ApprovalMode::Manual);
+
+        let event = run.receiver.recv().await.unwrap().unwrap();
+        assert!(matches!(
+            event,
+            AgentEvent::ToolApprovalRequested { ref tool, .. } if tool == "write_file"
+        ));
+        assert!(!workspace.0.join("result.txt").exists());
+
+        run.respond_to_approval(true).unwrap();
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::ToolStarted { .. }
+        ));
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::ToolFinished { .. }
+        ));
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::Final { .. }
+        ));
+        assert_eq!(
+            fs::read_to_string(workspace.0.join("result.txt")).unwrap(),
+            "approved"
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_mode_reports_rejected_tool_without_running_it() {
+        let workspace = TestWorkspace::new();
+        let backend = MockBackend::new(&[
+            r#"{"type":"tool_call","tool":"write_file","arguments":{"path":"result.txt","content":"blocked"}}"#,
+            r#"{"type":"final","content":"request rejected"}"#,
+        ]);
+        let tools =
+            ToolRegistry::new(&workspace.0, ToolPermissions::workspace_write(false)).unwrap();
+        let runner = AgentRunner::new(backend.clone(), tools, 3).unwrap();
+        let mut run =
+            runner.start_with_approval(vec![Message::user("Create a file")], ApprovalMode::Manual);
+
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::ToolApprovalRequested { .. }
+        ));
+        run.respond_to_approval(false).unwrap();
+        let event = run.receiver.recv().await.unwrap().unwrap();
+        assert!(matches!(
+            event,
+            AgentEvent::ToolFinished { ref result, .. } if result.contains("DECLINED")
+        ));
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::Final { .. }
+        ));
+        assert!(!workspace.0.join("result.txt").exists());
+        assert!(
+            backend.requests.lock().unwrap()[1]
+                .last()
+                .unwrap()
+                .content
+                .contains("DECLINED")
         );
     }
 }
