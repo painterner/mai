@@ -1,4 +1,4 @@
-# Gemini CLI (Rust)
+# maicli
 
 A blazing-fast terminal-based AI assistant built with Rust + Ratatui. It supports
 the OpenAI-compatible Chat Completions API by default, with optional native
@@ -33,13 +33,13 @@ cargo build --release
 export OPENAI_API_KEY="your-api-key-here"
 
 # Run interactive mode
-./target/release/gemini
+./target/release/maicli
 
 # Or single prompt mode
-./target/release/gemini -p "Explain Rust ownership in 3 sentences"
+./target/release/maicli -p "Explain Rust ownership in 3 sentences"
 
 # Run an agent task against the current workspace
-./target/release/gemini --agent -p "Inspect the project and update its README"
+./target/release/maicli --agent -p "Inspect the project and update its README"
 ```
 
 Alternatively, create a local `.env` file from the included template:
@@ -65,7 +65,7 @@ cargo install --path .
 ### Interactive Mode
 
 ```
-gemini
+maicli
 ```
 
 Opens a full TUI chat interface. Type messages and press Enter to send.
@@ -73,7 +73,7 @@ Opens a full TUI chat interface. Type messages and press Enter to send.
 ### Single Prompt
 
 ```
-gemini -p "What is the Rust borrow checker?"
+maicli -p "What is the Rust borrow checker?"
 ```
 
 ### Agent Mode
@@ -83,13 +83,13 @@ directory:
 
 ```bash
 # File inspection, search, and workspace edits
-gemini --agent -p "Find duplicated error handling and refactor it"
+maicli --agent -p "Find duplicated error handling and refactor it"
 
 # Also allow build and test commands
-gemini --agent --allow-shell -p "Fix the failing tests and verify the result"
+maicli --agent --allow-shell -p "Fix the failing tests and verify the result"
 
 # Limit the number of model/tool turns
-gemini --agent --agent-max-steps 6 -p "Summarize this project"
+maicli --agent --agent-max-steps 6 -p "Summarize this project"
 ```
 
 The default tools are `list_files`, `read_file`, `search_files`, `write_file`,
@@ -101,7 +101,7 @@ Shell execution is disabled by default. `--allow-shell` enables
 as the CLI and is not an operating-system sandbox. Enable it only for a
 workspace and model you trust.
 
-In interactive mode, start with `gemini --agent` or switch at runtime with
+In interactive mode, start with `maicli --agent` or switch at runtime with
 `/agent on` and `/agent off`. Tool results are shown separately from the model
 conversation.
 
@@ -161,7 +161,11 @@ conversation.
 
 ## Configuration
 
-Config file location: `~/.config/gemini-cli/config.toml`
+Config file location: `~/.config/maicli/config.toml`
+
+On first launch after upgrading, maicli copies an existing
+`~/.config/gemini-cli/config.toml` to the new location. An existing maicli
+configuration is never overwritten.
 
 ```toml
 provider = "openai"
@@ -200,7 +204,7 @@ You can also select the protocol for one invocation:
 
 ```bash
 API_PROVIDER=openai OPENAI_API_KEY="your-api-key" \
-  gemini --provider openai --model gpt-4o-mini -p "Hello"
+  maicli --provider openai --model gpt-4o-mini -p "Hello"
 ```
 
 ### Native Gemini API (optional)

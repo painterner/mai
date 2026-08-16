@@ -2,13 +2,15 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use gemini_cli::agent::{AgentRunner, ToolPermissions};
-use gemini_cli::api::ApiClient;
-use gemini_cli::app::App;
-use gemini_cli::cli::Args;
-use gemini_cli::config::Config;
-use gemini_cli::conversation::Message;
-use gemini_cli::prompts;
+use maicli::{
+    agent::{AgentRunner, ToolPermissions},
+    api::ApiClient,
+    app::App,
+    cli::Args,
+    config::Config,
+    conversation::Message,
+    prompts,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {

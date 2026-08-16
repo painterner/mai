@@ -1,8 +1,8 @@
-# Gemini CLI Rust - Copilot Instructions
+# maicli - Copilot Instructions
 
 ## Project Overview
 - **Language**: Rust (edition 2024)
-- **Binary name**: `gemini`
+- **Binary name**: `maicli`
 - **TUI Framework**: Ratatui + Crossterm
 - **Async Runtime**: Tokio
 - **HTTP Client**: Reqwest with rustls TLS backend
@@ -38,4 +38,4 @@
 - Use `thiserror` for library-style error types
 - Prefer streaming API for interactive mode
 - Keep UI rendering in `ui.rs`, state management in `app.rs`
-- Config supports both file (`~/.config/gemini-cli/config.toml`) and env vars
+- Config supports both file (`~/.config/maicli/config.toml`) and env vars

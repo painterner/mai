@@ -497,7 +497,8 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let path = std::env::temp_dir().join(format!(
-                "gemini-cli-agent-test-{}-{unique}",
+                "{}-agent-test-{}-{unique}",
+                crate::APP_NAME,
                 std::process::id()
             ));
             fs::create_dir_all(&path).unwrap();

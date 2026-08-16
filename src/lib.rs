@@ -1,3 +1,5 @@
+pub const APP_NAME: &str = env!("CARGO_PKG_NAME");
+
 pub mod agent;
 pub mod api;
 pub mod app;

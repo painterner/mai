@@ -1,13 +1,9 @@
 [package]
-name = "gemini-cli"
+name = "maicli"
 version = "0.1.0"
 edition = "2024"
 description = "A fast terminal AI client with OpenAI-compatible and Gemini APIs"
 license = "MIT"
-
-[[bin]]
-name = "gemini"
-path = "src/main.rs"
 
 [dependencies]
 # TUI

@@ -315,7 +315,8 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let path = std::env::temp_dir().join(format!(
-                "gemini-cli-runner-test-{}-{unique}",
+                "{}-runner-test-{}-{unique}",
+                crate::APP_NAME,
                 std::process::id()
             ));
             fs::create_dir_all(&path).unwrap();

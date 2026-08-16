@@ -59,7 +59,8 @@ fn main_regions(area: Rect) -> [Rect; 4] {
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let title = format!(
-        " ✨ Gemini CLI v{} │ {} │ {} ",
+        " ✨ {} v{} │ {} │ {} ",
+        crate::APP_NAME,
         env!("CARGO_PKG_VERSION"),
         app.config.provider,
         app.model
@@ -85,7 +86,7 @@ fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
         let welcome = Paragraph::new(Text::from(vec![
             Line::from(""),
             Line::from(Span::styled(
-                "  Welcome to Gemini CLI! 🚀",
+                format!("  Welcome to {}! 🚀", crate::APP_NAME),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -493,6 +494,7 @@ mod tests {
     #[test]
     fn renders_mode_controls_in_input_border() {
         let rendered = render_text(&test_app());
+        assert!(rendered.contains(crate::APP_NAME));
         assert!(rendered.contains(" Chat "));
         assert!(rendered.contains(" Agent "));
         assert!(rendered.contains(" Auto "));

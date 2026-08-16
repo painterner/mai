@@ -4,7 +4,7 @@ use crate::config::ApiProvider;
 
 /// A fast terminal AI assistant using an OpenAI-compatible API by default
 #[derive(Parser, Debug)]
-#[command(name = "gemini", version, about, long_about = None)]
+#[command(version, about, long_about = None)]
 pub struct Args {
     /// Send a single prompt without entering interactive mode
     #[arg(short, long)]
@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn parses_agent_options() {
         let args = Args::try_parse_from([
-            "gemini",
+            crate::APP_NAME,
             "--agent",
             "--agent-max-steps",
             "5",
@@ -75,6 +75,13 @@ mod tests {
 
     #[test]
     fn rejects_zero_agent_steps() {
-        assert!(Args::try_parse_from(["gemini", "--agent-max-steps", "0"]).is_err());
+        assert!(Args::try_parse_from([crate::APP_NAME, "--agent-max-steps", "0"]).is_err());
+    }
+
+    #[test]
+    fn command_name_comes_from_cargo_package() {
+        use clap::CommandFactory;
+
+        assert_eq!(Args::command().get_name(), crate::APP_NAME);
     }
 }

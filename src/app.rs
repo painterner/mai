@@ -180,7 +180,8 @@ impl App {
         app.messages.push(ChatMessage {
             role: Role::System,
             content: format!(
-                "✨ Gemini CLI v{} | Provider: {} | Model: {} | Mode: {} / {} | Type /help for commands",
+                "✨ {} v{} | Provider: {} | Model: {} | Mode: {} / {} | Type /help for commands",
+                crate::APP_NAME,
                 env!("CARGO_PKG_VERSION"),
                 app.config.provider,
                 model,

@@ -3,9 +3,10 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+const LEGACY_CONFIG_DIR_NAME: &str = "gemini-cli";
 const GEMINI_MODEL: &str = "gemini-2.0-flash";
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const OPENAI_MODEL: &str = "gpt-4o-mini";
@@ -119,11 +120,9 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Get the config file path: ~/.config/gemini-cli/config.toml
+    /// Get the config file path for the current Cargo package name.
     pub fn config_path() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .context("Failed to determine config directory")?
-            .join("gemini-cli");
+        let config_dir = config_base_dir()?.join(crate::APP_NAME);
         fs::create_dir_all(&config_dir)?;
         Ok(config_dir.join("config.toml"))
     }
@@ -131,6 +130,17 @@ impl Config {
     /// Load config from file or create a default one.
     pub fn load_or_create() -> Result<Self> {
         let path = Self::config_path()?;
+        let legacy_path = config_base_dir()?
+            .join(LEGACY_CONFIG_DIR_NAME)
+            .join("config.toml");
+
+        if migrate_legacy_config(&legacy_path, &path)? {
+            eprintln!(
+                "Migrated configuration from {} to {}",
+                legacy_path.display(),
+                path.display()
+            );
+        }
 
         if path.exists() {
             let content = fs::read_to_string(&path)
@@ -142,7 +152,8 @@ impl Config {
             let config = Config::default().with_env_overrides();
 
             if config.api_key.is_empty() {
-                let template = r#"# Gemini CLI Configuration
+                let template = format!(
+                    r#"# {} configuration
 # OpenAI-compatible protocol is the default. provider can be "openai" or "gemini".
 
 provider = "openai"
@@ -151,7 +162,9 @@ model = "gpt-4o-mini"
 base_url = "https://api.openai.com/v1"
 max_tokens = 8192
 temperature = 0.7
-"#;
+"#,
+                    crate::APP_NAME
+                );
                 fs::write(&path, template)?;
                 eprintln!(
                     "⚠️  No API key found. Set {} or edit:\n   {}",
@@ -230,8 +243,32 @@ temperature = 0.7
     }
 }
 
+fn config_base_dir() -> Result<PathBuf> {
+    dirs::config_dir().context("Failed to determine config directory")
+}
+
+fn migrate_legacy_config(legacy_path: &Path, new_path: &Path) -> Result<bool> {
+    if new_path.exists() || !legacy_path.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = new_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+    }
+    fs::copy(legacy_path, new_path).with_context(|| {
+        format!(
+            "Failed to migrate config from {} to {}",
+            legacy_path.display(),
+            new_path.display()
+        )
+    })?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
 
     #[test]
@@ -271,5 +308,30 @@ mod tests {
         config.set_provider(ApiProvider::Openai);
         assert_eq!(config.model, "custom-model");
         assert_eq!(config.base_url, "http://localhost:1234/v1");
+    }
+
+    #[test]
+    fn migrates_legacy_config_without_overwriting_new_config() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "{}-config-test-{}-{unique}",
+            crate::APP_NAME,
+            std::process::id()
+        ));
+        let legacy_path = root.join(LEGACY_CONFIG_DIR_NAME).join("config.toml");
+        let new_path = root.join(crate::APP_NAME).join("config.toml");
+        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        fs::write(&legacy_path, "legacy").unwrap();
+
+        assert!(migrate_legacy_config(&legacy_path, &new_path).unwrap());
+        assert_eq!(fs::read_to_string(&new_path).unwrap(), "legacy");
+
+        fs::write(&new_path, "current").unwrap();
+        assert!(!migrate_legacy_config(&legacy_path, &new_path).unwrap());
+        assert_eq!(fs::read_to_string(&new_path).unwrap(), "current");
+        fs::remove_dir_all(root).unwrap();
     }
 }
