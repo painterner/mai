@@ -145,6 +145,30 @@ fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
                     lines.push(line);
                 }
             }
+            Role::Thinking => {
+                let marker = if msg.collapsed { "▸" } else { "▾" };
+                let label = if msg.is_streaming {
+                    format!(" {marker} Thinking... ▍")
+                } else {
+                    format!(" {marker} Thinking ({} chars)", msg.content.chars().count())
+                };
+                lines.push(Line::from(Span::styled(
+                    label,
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                )));
+                if !msg.collapsed {
+                    for line in msg.content.lines() {
+                        lines.push(Line::from(Span::styled(
+                            format!("   {line}"),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::ITALIC),
+                        )));
+                    }
+                }
+            }
             Role::System => {
                 lines.push(Line::from(Span::styled(
                     format!(" ℹ️  {}", msg.content.lines().next().unwrap_or("")),
@@ -410,12 +434,52 @@ fn contains(area: Rect, column: u16, row: u16) -> bool {
     column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
 }
 
+pub fn thinking_message_at(frame_area: Rect, app: &App, column: u16, row: u16) -> Option<usize> {
+    let message_area = main_regions(frame_area)[1];
+    let block = Block::default().borders(Borders::LEFT | Borders::RIGHT);
+    let inner_area = block.inner(message_area);
+    if !contains(inner_area, column, row) {
+        return None;
+    }
+
+    let content_width = inner_area.width.saturating_sub(2) as usize;
+    let (total_lines, thinking_headers) = message_layout(app, content_width);
+    let max_scroll = total_lines.saturating_sub(inner_area.height);
+    let scroll = max_scroll.saturating_sub(app.scroll_offset);
+
+    thinking_headers.into_iter().find_map(|(index, line)| {
+        let screen_row = inner_area.y.checked_add(line.checked_sub(scroll)?)?;
+        (screen_row == row && screen_row < inner_area.bottom()).then_some(index)
+    })
+}
+
+fn message_layout(app: &App, content_width: usize) -> (u16, Vec<(usize, u16)>) {
+    let mut line = 0_u16;
+    let mut thinking_headers = Vec::new();
+    for (index, message) in app.messages.iter().enumerate() {
+        line = line.saturating_add(1);
+        if message.role == Role::Thinking {
+            thinking_headers.push((index, line));
+        }
+        line = line.saturating_add(1);
+        let body_lines = match message.role {
+            Role::User => message.content.lines().count(),
+            Role::System | Role::Tool => message.content.lines().count().saturating_sub(1),
+            Role::Assistant => markdown::render_to_lines(&message.content, content_width).len(),
+            Role::Thinking if message.collapsed => 0,
+            Role::Thinking => message.content.lines().count(),
+        };
+        line = line.saturating_add(u16::try_from(body_lines).unwrap_or(u16::MAX));
+    }
+    (line, thinking_headers)
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
-    use crate::app::PendingApproval;
+    use crate::app::{ChatMessage, PendingApproval};
     use crate::cli::Args;
     use crate::config::Config;
 
@@ -513,5 +577,59 @@ mod tests {
         assert!(rendered.contains(" Approve "));
         assert!(rendered.contains(" Reject "));
         assert!(rendered.contains("Pending write_file"));
+    }
+
+    #[test]
+    fn completed_thinking_is_collapsed_and_can_be_expanded() {
+        let mut app = test_app();
+        app.messages.clear();
+        app.messages.push(ChatMessage {
+            role: Role::Thinking,
+            content: "private reasoning".to_string(),
+            is_streaming: false,
+            collapsed: true,
+        });
+
+        let collapsed = render_text(&app);
+        assert!(collapsed.contains("Thinking (17 chars)"));
+        assert!(!collapsed.contains("private reasoning"));
+
+        app.toggle_latest_thinking();
+        let expanded = render_text(&app);
+        assert!(expanded.contains("private reasoning"));
+    }
+
+    #[test]
+    fn streaming_thinking_is_expanded() {
+        let mut app = test_app();
+        app.messages.clear();
+        app.messages.push(ChatMessage {
+            role: Role::Thinking,
+            content: "working through it".to_string(),
+            is_streaming: true,
+            collapsed: false,
+        });
+
+        let rendered = render_text(&app);
+        assert!(rendered.contains("Thinking..."));
+        assert!(rendered.contains("working through it"));
+    }
+
+    #[test]
+    fn thinking_header_is_clickable() {
+        let mut app = test_app();
+        app.messages.clear();
+        app.messages.push(ChatMessage {
+            role: Role::Thinking,
+            content: "reasoning".to_string(),
+            is_streaming: false,
+            collapsed: true,
+        });
+        let frame = Rect::new(0, 0, 100, 30);
+        let hit = (0..frame.height).find_map(|row| thinking_message_at(frame, &app, 2, row));
+
+        assert_eq!(hit, Some(0));
+        app.toggle_thinking(hit.unwrap());
+        assert!(!app.messages[0].collapsed);
     }
 }

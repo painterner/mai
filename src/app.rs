@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::agent::{AgentEvent, AgentRun, AgentRunner, ApprovalMode, ToolPermissions};
-use crate::api::ApiClient;
+use crate::api::{ApiClient, ResponseEvent, ResponseStream};
 use crate::cli::Args;
 use crate::config::Config;
 use crate::conversation::Message;
@@ -25,12 +25,14 @@ pub struct ChatMessage {
     pub role: Role,
     pub content: String,
     pub is_streaming: bool,
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Role {
     User,
     Assistant,
+    Thinking,
     System,
     Tool,
 }
@@ -57,12 +59,13 @@ pub struct PendingApproval {
 }
 
 enum ActiveResponse {
-    Chat(mpsc::Receiver<Result<String>>),
+    Chat(ResponseStream),
     Agent(AgentRun),
 }
 
 enum ResponseUpdate {
     Text(String),
+    Thinking(String),
     ToolApprovalRequested {
         tool: String,
         arguments: serde_json::Value,
@@ -82,12 +85,14 @@ impl ActiveResponse {
     fn try_recv(&mut self) -> ResponseUpdate {
         match self {
             Self::Chat(receiver) => match receiver.try_recv() {
-                Ok(Ok(chunk)) => ResponseUpdate::Text(chunk),
+                Ok(Ok(ResponseEvent::Content(chunk))) => ResponseUpdate::Text(chunk),
+                Ok(Ok(ResponseEvent::Thinking(chunk))) => ResponseUpdate::Thinking(chunk),
                 Ok(Err(error)) => ResponseUpdate::Error(error),
                 Err(mpsc::error::TryRecvError::Disconnected) => ResponseUpdate::Disconnected,
                 Err(mpsc::error::TryRecvError::Empty) => ResponseUpdate::Empty,
             },
             Self::Agent(run) => match run.try_recv() {
+                Ok(Ok(AgentEvent::Thinking { content })) => ResponseUpdate::Thinking(content),
                 Ok(Ok(AgentEvent::ToolApprovalRequested { tool, arguments })) => {
                     ResponseUpdate::ToolApprovalRequested { tool, arguments }
                 }
@@ -189,6 +194,7 @@ impl App {
                 app.approval_mode
             ),
             is_streaming: false,
+            collapsed: false,
         });
 
         Ok(app)
@@ -221,10 +227,17 @@ impl App {
                 .unwrap_or(ResponseUpdate::Empty);
             match update {
                 ResponseUpdate::Text(chunk) => {
+                    self.finish_thinking();
                     self.append_assistant_text(&chunk);
                     continue;
                 }
+                ResponseUpdate::Thinking(chunk) => {
+                    self.append_thinking_text(&chunk);
+                    self.status = "Thinking...".to_string();
+                    continue;
+                }
                 ResponseUpdate::ToolApprovalRequested { tool, arguments } => {
+                    self.finish_thinking();
                     self.status = format!("Approve {tool}? Enter/Y: approve | Esc/N: reject");
                     self.pending_approval = Some(PendingApproval {
                         tool,
@@ -234,15 +247,18 @@ impl App {
                     continue;
                 }
                 ResponseUpdate::ToolStarted(tool) => {
+                    self.finish_thinking();
                     self.status = format!("Agent running tool: {tool}");
                     continue;
                 }
                 ResponseUpdate::ToolFinished { tool, result } => {
+                    self.finish_thinking();
                     self.add_tool_message(&tool, &result);
                     self.status = format!("Agent completed tool: {tool}");
                     continue;
                 }
                 ResponseUpdate::Final(content) => {
+                    self.finish_thinking();
                     self.append_assistant_text(&content);
                     self.finish_response();
                     continue;
@@ -276,6 +292,69 @@ impl App {
         }
     }
 
+    fn append_thinking_text(&mut self, text: &str) {
+        if let Some(message) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|message| message.role == Role::Thinking && message.is_streaming)
+        {
+            message.content.push_str(text);
+            return;
+        }
+
+        let insert_at = self.messages.len().saturating_sub(1);
+        self.messages.insert(
+            insert_at,
+            ChatMessage {
+                role: Role::Thinking,
+                content: text.to_string(),
+                is_streaming: true,
+                collapsed: false,
+            },
+        );
+    }
+
+    fn finish_thinking(&mut self) {
+        for message in self
+            .messages
+            .iter_mut()
+            .filter(|message| message.role == Role::Thinking && message.is_streaming)
+        {
+            message.is_streaming = false;
+            message.collapsed = true;
+        }
+    }
+
+    pub fn toggle_latest_thinking(&mut self) {
+        let index = self
+            .messages
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, message)| (message.role == Role::Thinking).then_some(index));
+        if let Some(index) = index {
+            self.toggle_thinking(index);
+        } else {
+            self.status = "No thinking content available.".to_string();
+        }
+    }
+
+    pub fn toggle_thinking(&mut self, index: usize) {
+        let Some(message) = self.messages.get_mut(index) else {
+            return;
+        };
+        if message.role != Role::Thinking || message.is_streaming {
+            return;
+        }
+        message.collapsed = !message.collapsed;
+        self.status = if message.collapsed {
+            "Thinking collapsed.".to_string()
+        } else {
+            "Thinking expanded.".to_string()
+        };
+    }
+
     fn add_tool_message(&mut self, tool: &str, result: &str) {
         let insert_at = self.messages.len().saturating_sub(1);
         self.messages.insert(
@@ -284,11 +363,13 @@ impl App {
                 role: Role::Tool,
                 content: format!("{tool}\n{}", truncate(result, 2_000)),
                 is_streaming: false,
+                collapsed: false,
             },
         );
     }
 
     fn finish_response(&mut self) {
+        self.finish_thinking();
         if let Some(last) = self.messages.last_mut()
             && last.is_streaming
         {
@@ -305,6 +386,7 @@ impl App {
     }
 
     fn fail_response(&mut self, error: &anyhow::Error) {
+        self.finish_thinking();
         if let Some(last) = self.messages.last_mut()
             && last.role == Role::Assistant
             && last.is_streaming
@@ -389,6 +471,12 @@ impl App {
                 let (width, height) =
                     crossterm::terminal::size().context("Failed to read terminal dimensions")?;
                 let frame_area = Rect::new(0, 0, width, height);
+                if let Some(index) =
+                    ui::thinking_message_at(frame_area, self, mouse.column, mouse.row)
+                {
+                    self.toggle_thinking(index);
+                    return Ok(());
+                }
                 match ui::input_control_at(
                     frame_area,
                     mouse.column,
@@ -436,6 +524,7 @@ impl App {
             // Mode shortcuts
             (_, KeyCode::F(2)) => self.toggle_chat_mode(),
             (_, KeyCode::F(3)) => self.toggle_approval_mode(),
+            (_, KeyCode::F(4)) => self.toggle_latest_thinking(),
 
             // Submit input
             (_, KeyCode::Enter) => {
@@ -534,6 +623,7 @@ impl App {
             role: Role::User,
             content: input.clone(),
             is_streaming: false,
+            collapsed: false,
         });
 
         // Add to API history
@@ -548,12 +638,13 @@ impl App {
             role: Role::Assistant,
             content: String::new(),
             is_streaming: true,
+            collapsed: false,
         });
 
         let response = match self.mode {
             ChatMode::Chat => self
                 .api
-                .complete_stream(Some(prompts::chat_system()), &self.api_history)
+                .complete_stream_events(Some(prompts::chat_system()), &self.api_history)
                 .map(ActiveResponse::Chat),
             ChatMode::Agent => Ok(ActiveResponse::Agent(
                 self.agent
@@ -581,17 +672,20 @@ impl App {
                         "  /model <name> - Switch model",
                         "  /agent on|off - Switch chat/agent mode",
                         "  /approval auto|manual - Set tool approval mode",
+                        "  /thinking     - Expand/collapse latest thinking",
                         "  /config       - Show current config",
                         "  /quit, /q     - Exit",
                     ]
                     .join("\n"),
                     is_streaming: false,
+                    collapsed: false,
                 });
             }
             "/clear" | "/c" => {
                 self.messages.clear();
                 self.api_history.clear();
-                self.status = "Chat cleared.".to_string();
+                self.api.start_new_session();
+                self.status = "Chat cleared. Started a new session.".to_string();
             }
             "/model" | "/m" => {
                 if let Some(model) = parts.get(1) {
@@ -622,20 +716,23 @@ impl App {
                     self.status = format!("Current approval mode: {}", self.approval_mode);
                 }
             },
+            "/thinking" | "/think" => self.toggle_latest_thinking(),
             "/config" => {
                 self.messages.push(ChatMessage {
                     role: Role::System,
                     content: format!(
-                        "⚙️ Configuration:\n  Provider: {}\n  Model: {}\n  Mode: {}\n  Approval: {}\n  Base URL: {}\n  Max tokens: {}\n  Temperature: {}",
+                        "⚙️ Configuration:\n  Provider: {}\n  Model: {}\n  Mode: {}\n  Approval: {}\n  Session ID: {}\n  Base URL: {}\n  Max tokens: {}\n  Temperature: {}",
                         self.config.provider,
                         self.model,
                         self.mode,
                         self.approval_mode,
+                        self.api.session_id(),
                         self.config.base_url,
                         self.config.max_tokens,
                         self.config.temperature
                     ),
                     is_streaming: false,
+                    collapsed: false,
                 });
             }
             "/quit" | "/q" => {
@@ -664,5 +761,74 @@ fn truncate(value: &str, max_chars: usize) -> String {
         format!("{truncated}\n(output truncated)")
     } else {
         truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_app() -> App {
+        App::new(
+            Config::default(),
+            Args {
+                prompt: None,
+                model: None,
+                provider: None,
+                agent: false,
+                agent_max_steps: 12,
+                allow_shell: false,
+                debug: false,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn thinking_chunks_collapse_without_entering_api_history() {
+        let mut app = test_app();
+        app.append_thinking_text("first ");
+        app.append_thinking_text("second");
+
+        let thinking = app
+            .messages
+            .iter()
+            .find(|message| message.role == Role::Thinking)
+            .unwrap();
+        assert_eq!(thinking.content, "first second");
+        assert!(thinking.is_streaming);
+        assert!(!thinking.collapsed);
+        assert!(app.api_history.is_empty());
+
+        app.finish_thinking();
+        let thinking = app
+            .messages
+            .iter()
+            .find(|message| message.role == Role::Thinking)
+            .unwrap();
+        assert!(!thinking.is_streaming);
+        assert!(thinking.collapsed);
+
+        app.append_thinking_text("next step");
+        assert_eq!(
+            app.messages
+                .iter()
+                .filter(|message| message.role == Role::Thinking)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn clear_starts_a_new_http_session() {
+        let mut app = test_app();
+        let previous = app.api.session_id();
+        app.api_history.push(Message::user("old conversation"));
+
+        app.handle_command("/clear").unwrap();
+
+        assert!(app.api_history.is_empty());
+        assert_ne!(app.api.session_id(), previous);
+        assert!(app.status.contains("new session"));
     }
 }

@@ -9,11 +9,13 @@ Gemini API support.
 - ⚡ **Instant startup** (~50ms vs ~3s for Node.js-based CLIs)
 - 💬 **Interactive TUI** with Ratatui - full terminal UI with scrolling, colors, and keyboard navigation
 - 🔄 **Streaming responses** - see AI responses appear in real-time via SSE
+- 🧠 **Collapsible thinking** - stream provider reasoning separately from answers
 - 📝 **Markdown rendering** - code blocks, headers, bold, italic, inline code
 - 🤖 **Agent mode** - inspect, search, and edit files through a bounded tool loop
 - ⚙️ **Configurable** - TOML config file + environment variable overrides
 - 🔑 **Simple auth** - just set `OPENAI_API_KEY` and go
 - 🔌 **Two API protocols** - native Gemini and OpenAI-compatible `/chat/completions`
+- 🧵 **Session tracking** - one `session-id` header is shared by every request in a chat
 
 ## Quick Start
 
@@ -105,6 +107,14 @@ In interactive mode, start with `maicli --agent` or switch at runtime with
 `/agent on` and `/agent off`. Tool results are shown separately from the model
 conversation.
 
+When the provider returns reasoning, it appears in a separate `Thinking` block
+while streaming and collapses automatically when the answer or tool action is
+ready. Click the `Thinking` heading, press `F4`, or use `/thinking` to expand or
+collapse the latest block. OpenAI-compatible responses support
+`reasoning_content` and `reasoning`; native Gemini responses support parts with
+`thought: true`. Models or servers that do not expose reasoning continue to
+show only the final answer.
+
 The input border has two clickable segmented controls in its upper-right
 corner:
 
@@ -133,10 +143,11 @@ interactive TUI feature; single-prompt Agent runs remain automatic.
 | Command | Description |
 |---------|-------------|
 | `/help`, `/h` | Show available commands |
-| `/clear`, `/c` | Clear chat history |
+| `/clear`, `/c` | Clear history and start a new HTTP session |
 | `/model <name>`, `/m` | Switch model |
 | `/agent on\|off`, `/a on\|off` | Switch between Agent and chat modes |
 | `/approval auto\|manual` | Set Agent tool approval behavior |
+| `/thinking`, `/think` | Expand/collapse the latest thinking block |
 | `/config` | Show current configuration |
 | `/quit`, `/q` | Exit |
 
@@ -147,6 +158,7 @@ interactive TUI feature; single-prompt Agent runs remain automatic.
 | `Enter` | Send message |
 | `F2` | Switch between Chat and Agent |
 | `F3` | Switch between Auto and Manual approval |
+| `F4` | Expand/collapse the latest thinking block |
 | `Enter` / `Y` | Approve a pending Manual tool call |
 | `Esc` / `N` | Reject a pending Manual tool call |
 | `Ctrl+C` | Cancel stream / Quit |
@@ -157,7 +169,15 @@ interactive TUI feature; single-prompt Agent runs remain automatic.
 | `PageUp/Down` | Scroll messages |
 
 The mouse can click all input-border controls and use the wheel to scroll the
-conversation.
+conversation. Completed `Thinking` headings are also clickable.
+
+## HTTP Session
+
+Each process starts with a random UUID-style session identifier. Every Gemini
+or OpenAI-compatible HTTP request, including all Agent model turns, sends the
+same `session-id` header. `/clear` rotates the identifier so the next
+conversation starts a new server-side session. `/config` displays the current
+identifier for diagnostics.
 
 ## Configuration
 

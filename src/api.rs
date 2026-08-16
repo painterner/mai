@@ -1,11 +1,23 @@
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
+use reqwest::header::HeaderName;
 use reqwest_eventsource::{Event, EventSource};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, RwLock};
 use tracing::debug;
 
 use crate::config::{ApiProvider, Config};
 use crate::conversation::{Message, Role};
+
+const SESSION_ID_HEADER: HeaderName = HeaderName::from_static("session-id");
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResponseEvent {
+    Thinking(String),
+    Content(String),
+}
+
+pub type ResponseStream = tokio::sync::mpsc::Receiver<Result<ResponseEvent>>;
 
 #[derive(Debug, Serialize)]
 struct GeminiRequest {
@@ -59,6 +71,8 @@ struct GeminiContent {
 #[derive(Debug, Deserialize)]
 struct GeminiResponsePart {
     text: Option<String>,
+    #[serde(default)]
+    thought: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +130,8 @@ struct OpenAiStreamChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAiDelta {
     content: Option<String>,
+    reasoning_content: Option<String>,
+    reasoning: Option<String>,
 }
 
 #[derive(Clone)]
@@ -127,6 +143,7 @@ pub struct ApiClient {
     model: String,
     max_tokens: u32,
     temperature: f32,
+    session_id: Arc<RwLock<String>>,
 }
 
 impl ApiClient {
@@ -138,6 +155,7 @@ impl ApiClient {
             );
         }
 
+        let session_id = generate_session_id();
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()?;
@@ -150,11 +168,34 @@ impl ApiClient {
             model: config.model.clone(),
             max_tokens: config.max_tokens,
             temperature: config.temperature,
+            session_id: Arc::new(RwLock::new(session_id)),
         })
+    }
+
+    pub fn session_id(&self) -> String {
+        self.session_id
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn start_new_session(&self) -> String {
+        let session_id = generate_session_id();
+        *self
+            .session_id
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = session_id.clone();
+        session_id
     }
 
     pub fn set_model(&mut self, model: &str) {
         self.model = model.to_string();
+    }
+
+    fn post(&self, endpoint: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
+        self.client
+            .post(endpoint)
+            .header(SESSION_ID_HEADER, self.session_id())
     }
 
     pub async fn complete(
@@ -173,6 +214,32 @@ impl ApiClient {
         system_prompt: Option<&str>,
         messages: &[Message],
     ) -> Result<tokio::sync::mpsc::Receiver<Result<String>>> {
+        let mut events = self.complete_stream_events(system_prompt, messages)?;
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                match event {
+                    Ok(ResponseEvent::Content(content)) => {
+                        if sender.send(Ok(content)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(ResponseEvent::Thinking(_)) => {}
+                    Err(error) => {
+                        let _ = sender.send(Err(error)).await;
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(receiver)
+    }
+
+    pub fn complete_stream_events(
+        &self,
+        system_prompt: Option<&str>,
+        messages: &[Message],
+    ) -> Result<ResponseStream> {
         match self.provider {
             ApiProvider::Gemini => self.complete_stream_gemini(system_prompt, messages),
             ApiProvider::Openai => self.complete_stream_openai(system_prompt, messages),
@@ -189,7 +256,6 @@ impl ApiClient {
         debug!("Sending Gemini request to: {}", endpoint);
 
         let response = self
-            .client
             .post(&endpoint)
             .query(&[("key", &self.api_key)])
             .json(&request)
@@ -218,7 +284,7 @@ impl ApiClient {
         &self,
         system_prompt: Option<&str>,
         messages: &[Message],
-    ) -> Result<tokio::sync::mpsc::Receiver<Result<String>>> {
+    ) -> Result<ResponseStream> {
         let request = self.gemini_request(system_prompt, messages);
         let endpoint = format!(
             "{}/models/{}:streamGenerateContent",
@@ -226,7 +292,6 @@ impl ApiClient {
         );
         let (tx, rx) = tokio::sync::mpsc::channel(32);
         let req = self
-            .client
             .post(endpoint)
             .query(&[("alt", "sse"), ("key", self.api_key.as_str())])
             .json(&request);
@@ -247,9 +312,10 @@ impl ApiClient {
                     Ok(Event::Message(msg)) => {
                         match serde_json::from_str::<GeminiStreamChunk>(&msg.data) {
                             Ok(chunk) => {
-                                let text = gemini_text(chunk.candidates);
-                                if !text.is_empty() && tx.send(Ok(text)).await.is_err() {
-                                    break;
+                                for event in gemini_events(chunk.candidates) {
+                                    if tx.send(Ok(event)).await.is_err() {
+                                        return;
+                                    }
                                 }
                             }
                             Err(err) => {
@@ -284,7 +350,7 @@ impl ApiClient {
         let endpoint = format!("{}/chat/completions", self.base_url);
         debug!("Sending OpenAI-compatible request to: {}", endpoint);
 
-        let response = openai_auth(self.client.post(&endpoint), &self.api_key)
+        let response = openai_auth(self.post(&endpoint), &self.api_key)
             .json(&request)
             .send()
             .await
@@ -320,11 +386,11 @@ impl ApiClient {
         &self,
         system_prompt: Option<&str>,
         messages: &[Message],
-    ) -> Result<tokio::sync::mpsc::Receiver<Result<String>>> {
+    ) -> Result<ResponseStream> {
         let request = self.openai_request(system_prompt, messages, true);
         let endpoint = format!("{}/chat/completions", self.base_url);
         let (tx, rx) = tokio::sync::mpsc::channel(32);
-        let req = openai_auth(self.client.post(endpoint), &self.api_key).json(&request);
+        let req = openai_auth(self.post(endpoint), &self.api_key).json(&request);
 
         tokio::spawn(async move {
             let mut es = match EventSource::new(req) {
@@ -355,14 +421,14 @@ impl ApiClient {
                                         .await;
                                     break;
                                 }
-                                let text = chunk
+                                let delta = chunk
                                     .choices
                                     .and_then(|choices| choices.into_iter().next())
-                                    .and_then(|choice| choice.delta)
-                                    .and_then(|delta| delta.content)
-                                    .unwrap_or_default();
-                                if !text.is_empty() && tx.send(Ok(text)).await.is_err() {
-                                    break;
+                                    .and_then(|choice| choice.delta);
+                                for event in openai_delta_events(delta) {
+                                    if tx.send(Ok(event)).await.is_err() {
+                                        return;
+                                    }
                                 }
                             }
                             Err(err) => {
@@ -436,6 +502,31 @@ fn openai_auth(request: reqwest::RequestBuilder, api_key: &str) -> reqwest::Requ
     }
 }
 
+fn generate_session_id() -> String {
+    let mut bytes = rand::random::<[u8; 16]>();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
+}
+
 fn to_openai_message(message: &Message) -> OpenAiMessage {
     OpenAiMessage {
         role: match message.role {
@@ -459,6 +550,16 @@ fn to_gemini_message(message: &Message) -> GeminiMessage {
 }
 
 fn gemini_text(candidates: Option<Vec<GeminiCandidate>>) -> String {
+    gemini_events(candidates)
+        .into_iter()
+        .filter_map(|event| match event {
+            ResponseEvent::Content(text) => Some(text),
+            ResponseEvent::Thinking(_) => None,
+        })
+        .collect()
+}
+
+fn gemini_events(candidates: Option<Vec<GeminiCandidate>>) -> Vec<ResponseEvent> {
     candidates
         .and_then(|items| items.into_iter().next())
         .and_then(|candidate| candidate.content)
@@ -466,11 +567,33 @@ fn gemini_text(candidates: Option<Vec<GeminiCandidate>>) -> String {
         .map(|parts| {
             parts
                 .into_iter()
-                .filter_map(|part| part.text)
-                .collect::<Vec<_>>()
-                .join("")
+                .filter_map(|part| {
+                    part.text.filter(|text| !text.is_empty()).map(|text| {
+                        if part.thought {
+                            ResponseEvent::Thinking(text)
+                        } else {
+                            ResponseEvent::Content(text)
+                        }
+                    })
+                })
+                .collect()
         })
         .unwrap_or_default()
+}
+
+fn openai_delta_events(delta: Option<OpenAiDelta>) -> Vec<ResponseEvent> {
+    let Some(delta) = delta else {
+        return Vec::new();
+    };
+    let mut events = Vec::with_capacity(2);
+    let thinking = delta.reasoning_content.or(delta.reasoning);
+    if let Some(thinking) = thinking.filter(|text| !text.is_empty()) {
+        events.push(ResponseEvent::Thinking(thinking));
+    }
+    if let Some(content) = delta.content.filter(|text| !text.is_empty()) {
+        events.push(ResponseEvent::Content(content));
+    }
+    events
 }
 
 #[cfg(test)]
@@ -496,9 +619,11 @@ mod tests {
                 parts: Some(vec![
                     GeminiResponsePart {
                         text: Some("a".into()),
+                        thought: false,
                     },
                     GeminiResponsePart {
                         text: Some("b".into()),
+                        thought: false,
                     },
                 ]),
             }),
@@ -537,5 +662,70 @@ mod tests {
         assert_eq!(value["systemInstruction"]["parts"][0]["text"], "Use tools.");
         assert_eq!(value["contents"][0]["role"], "user");
         assert_eq!(value["contents"][0]["parts"][0]["text"], "work");
+    }
+
+    #[test]
+    fn api_clients_have_unique_session_ids_and_clones_reuse_them() {
+        let config = Config::default();
+        let first = ApiClient::new(&config).unwrap();
+        let cloned = first.clone();
+        let second = ApiClient::new(&config).unwrap();
+
+        assert_eq!(first.session_id(), cloned.session_id());
+        assert_ne!(first.session_id(), second.session_id());
+        assert_eq!(first.session_id().len(), 36);
+
+        let request = first.post("http://localhost/").build().unwrap();
+        assert_eq!(
+            request.headers().get(SESSION_ID_HEADER).unwrap(),
+            first.session_id().as_str()
+        );
+
+        let previous = first.session_id();
+        let current = first.start_new_session();
+        assert_ne!(previous, current);
+        assert_eq!(cloned.session_id(), current);
+        assert_ne!(second.session_id(), current);
+    }
+
+    #[test]
+    fn parses_openai_reasoning_and_content_events() {
+        let events = openai_delta_events(Some(OpenAiDelta {
+            content: Some("answer".to_string()),
+            reasoning_content: Some("thinking".to_string()),
+            reasoning: None,
+        }));
+        assert_eq!(
+            events,
+            vec![
+                ResponseEvent::Thinking("thinking".to_string()),
+                ResponseEvent::Content("answer".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn separates_gemini_thought_parts_from_content() {
+        let candidates = Some(vec![GeminiCandidate {
+            content: Some(GeminiContent {
+                parts: Some(vec![
+                    GeminiResponsePart {
+                        text: Some("thinking".to_string()),
+                        thought: true,
+                    },
+                    GeminiResponsePart {
+                        text: Some("answer".to_string()),
+                        thought: false,
+                    },
+                ]),
+            }),
+        }]);
+        assert_eq!(
+            gemini_events(candidates),
+            vec![
+                ResponseEvent::Thinking("thinking".to_string()),
+                ResponseEvent::Content("answer".to_string())
+            ]
+        );
     }
 }

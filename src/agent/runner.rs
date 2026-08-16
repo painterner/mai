@@ -3,33 +3,31 @@ use std::sync::Arc;
 use std::{fmt, result};
 
 use anyhow::{Context, Result, bail};
-use futures::FutureExt;
-use futures::future::BoxFuture;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, ResponseEvent, ResponseStream};
 use crate::conversation::Message;
 use crate::prompts;
 
 use super::{AgentAction, ToolRegistry, parse_action};
 
 pub trait CompletionBackend: Send + Sync {
-    fn complete<'a>(
-        &'a self,
-        system_prompt: Option<&'a str>,
-        messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<String>>;
+    fn complete_stream(
+        &self,
+        system_prompt: Option<&str>,
+        messages: &[Message],
+    ) -> Result<ResponseStream>;
 }
 
 impl CompletionBackend for ApiClient {
-    fn complete<'a>(
-        &'a self,
-        system_prompt: Option<&'a str>,
-        messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<String>> {
-        async move { ApiClient::complete(self, system_prompt, messages).await }.boxed()
+    fn complete_stream(
+        &self,
+        system_prompt: Option<&str>,
+        messages: &[Message],
+    ) -> Result<ResponseStream> {
+        self.complete_stream_events(system_prompt, messages)
     }
 }
 
@@ -51,6 +49,7 @@ impl fmt::Display for ApprovalMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
+    Thinking { content: String },
     ToolApprovalRequested { tool: String, arguments: Value },
     ToolStarted { tool: String },
     ToolFinished { tool: String, result: String },
@@ -180,10 +179,18 @@ impl AgentRunner {
         }
 
         for _ in 0..self.max_steps {
-            let response = self
+            let mut response_stream = self
                 .backend
-                .complete(Some(&self.system_prompt), &messages)
-                .await?;
+                .complete_stream(Some(&self.system_prompt), &messages)?;
+            let mut response = String::new();
+            while let Some(event) = response_stream.recv().await {
+                match event? {
+                    ResponseEvent::Thinking(content) => {
+                        send_event(sender, AgentEvent::Thinking { content }).await;
+                    }
+                    ResponseEvent::Content(content) => response.push_str(&content),
+                }
+            }
             let action = match parse_action(&response) {
                 Ok(action) => action,
                 Err(error) => {
@@ -273,7 +280,7 @@ mod tests {
 
     #[derive(Clone)]
     struct MockBackend {
-        responses: Arc<Mutex<VecDeque<String>>>,
+        responses: Arc<Mutex<VecDeque<Vec<ResponseEvent>>>>,
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
     }
 
@@ -281,28 +288,42 @@ mod tests {
         fn new(responses: &[&str]) -> Self {
             Self {
                 responses: Arc::new(Mutex::new(
-                    responses.iter().map(|value| value.to_string()).collect(),
+                    responses
+                        .iter()
+                        .map(|value| vec![ResponseEvent::Content(value.to_string())])
+                        .collect(),
                 )),
+                requests: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn with_events(responses: Vec<Vec<ResponseEvent>>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses.into())),
                 requests: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
 
     impl CompletionBackend for MockBackend {
-        fn complete<'a>(
-            &'a self,
-            system_prompt: Option<&'a str>,
-            messages: &'a [Message],
-        ) -> BoxFuture<'a, Result<String>> {
+        fn complete_stream(
+            &self,
+            system_prompt: Option<&str>,
+            messages: &[Message],
+        ) -> Result<ResponseStream> {
             assert!(system_prompt.unwrap().contains("list_files"));
             self.requests.lock().unwrap().push(messages.to_vec());
-            let response = self
+            let events = self
                 .responses
                 .lock()
                 .unwrap()
                 .pop_front()
                 .expect("mock response queue exhausted");
-            async move { Ok(response) }.boxed()
+            let (sender, receiver) = mpsc::channel(events.len().max(1));
+            for event in events {
+                sender.try_send(Ok(event)).unwrap();
+            }
+            Ok(receiver)
         }
     }
 
@@ -447,6 +468,32 @@ mod tests {
                 .unwrap()
                 .content
                 .contains("DECLINED")
+        );
+    }
+
+    #[tokio::test]
+    async fn forwards_thinking_before_final_event() {
+        let workspace = TestWorkspace::new();
+        let backend = MockBackend::with_events(vec![vec![
+            ResponseEvent::Thinking("considering".to_string()),
+            ResponseEvent::Content(r#"{"type":"final","content":"done"}"#.to_string()),
+        ]]);
+        let tools =
+            ToolRegistry::new(&workspace.0, ToolPermissions::workspace_write(false)).unwrap();
+        let runner = AgentRunner::new(backend, tools, 2).unwrap();
+        let mut run = runner.start(vec![Message::user("task")]);
+
+        assert_eq!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::Thinking {
+                content: "considering".to_string()
+            }
+        );
+        assert_eq!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::Final {
+                content: "done".to_string()
+            }
         );
     }
 }

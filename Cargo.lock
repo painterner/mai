@@ -1008,6 +1008,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "pulldown-cmark",
+ "rand",
  "ratatui",
  "reqwest",
  "reqwest-eventsource",
