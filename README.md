@@ -15,7 +15,7 @@ Gemini API support.
 - ⚙️ **Configurable** - TOML config file + environment variable overrides
 - 🔑 **Simple auth** - just set `OPENAI_API_KEY` and go
 - 🔌 **Two API protocols** - native Gemini and OpenAI-compatible `/chat/completions`
-- 🧵 **Session tracking** - one `session-id` header is shared by every request in a chat
+- 🧵 **Restorable sessions** - conversations are saved and grouped by working directory
 
 ## Quick Start
 
@@ -172,6 +172,7 @@ interactive TUI feature; single-prompt Agent runs remain automatic.
 |---------|-------------|
 | `/help`, `/h` | Show available commands |
 | `/clear`, `/c` | Clear history and start a new HTTP session |
+| `/sessions`, `/session`, `/s` | Open the session restore picker for this directory |
 | `/model <name>`, `/m` | Switch model |
 | `/agent on\|off`, `/a on\|off` | Switch between Agent and chat modes |
 | `/approval auto\|manual` | Set Agent tool approval behavior |
@@ -200,13 +201,26 @@ interactive TUI feature; single-prompt Agent runs remain automatic.
 The mouse can click all input-border controls and use the wheel to scroll the
 conversation. Completed `Thinking` headings are also clickable.
 
-## HTTP Session
+## Sessions and restore
 
-Each process starts with a random UUID-style session identifier. Every Gemini
-or OpenAI-compatible HTTP request, including all Agent model turns, sends the
-same `session-id` header. `/clear` rotates the identifier so the next
-conversation starts a new server-side session. `/config` displays the current
-identifier for diagnostics.
+Interactive conversations are saved automatically. maicli maintains an
+internal mapping from the canonical working-directory path to its sessions, so
+starting the TUI in a directory with saved conversations opens a restore
+picker. Use the arrow keys (or `j`/`k`) and `Enter` to restore a conversation,
+or choose **Start a new session**. `n` and `Esc` also start a new session. The
+same picker can be reopened at any time with `/sessions`.
+
+The session store lives below the platform's local application-data directory
+(on Linux, normally `$XDG_DATA_HOME/maicli/sessions` or
+`~/.local/share/maicli/sessions`). `index.json` holds the directory-to-session
+mapping and `records/` contains the conversation records. Restoring brings back
+both the visible conversation/API context and its UUID-style `session-id`.
+
+Every Gemini or OpenAI-compatible HTTP request, including all Agent model
+turns, sends that ID in the `session-id` header. `/clear` preserves the old
+record, clears the active history, and rotates the identifier so the next
+message starts a new session. `/config` displays the current identifier for
+diagnostics.
 
 ## Configuration
 

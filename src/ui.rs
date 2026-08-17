@@ -3,7 +3,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
+    },
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -42,6 +45,69 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_messages(frame, app, regions[1]);
     draw_status(frame, app, regions[2]);
     draw_input(frame, app, regions[3]);
+    if app.session_picker.is_some() {
+        draw_session_picker(frame, app);
+    }
+}
+
+fn draw_session_picker(frame: &mut Frame, app: &App) {
+    let Some(picker) = app.session_picker.as_ref() else {
+        return;
+    };
+    let frame_area = frame.area();
+    let width = frame_area.width.saturating_sub(2).clamp(1, 86);
+    let desired_height = u16::try_from(picker.sessions.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(5);
+    let available_height = frame_area.height.saturating_sub(2).max(1);
+    let height = desired_height.clamp(1, available_height);
+    let area = Rect::new(
+        frame_area.x + frame_area.width.saturating_sub(width) / 2,
+        frame_area.y + frame_area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(" Restore a session for this directory ")
+        .title_bottom(Line::from(" ↑/↓ select • Enter restore • N/Esc new ").centered())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut items = vec![ListItem::new(Line::from(vec![
+        Span::styled("＋ ", Style::default().fg(Color::Green)),
+        Span::styled(
+            "Start a new session",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ]))];
+    items.extend(picker.sessions.iter().map(|session| {
+        let timestamp = session
+            .updated_at
+            .strip_suffix('Z')
+            .unwrap_or(&session.updated_at)
+            .replace('T', " ");
+        ListItem::new(Line::from(vec![
+            Span::styled("↻ ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!("{}  ", session.title)),
+            Span::styled(
+                format!("{timestamp} • {} messages", session.message_count),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]))
+    }));
+
+    let list = List::new(items).highlight_symbol("› ").highlight_style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    let mut state = ListState::default().with_selected(Some(picker.selected));
+    frame.render_stateful_widget(list, inner, &mut state);
 }
 
 fn main_regions(area: Rect) -> [Rect; 4] {
@@ -479,12 +545,13 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
-    use crate::app::{ChatMessage, PendingApproval};
+    use crate::app::{ChatMessage, PendingApproval, SessionPicker};
     use crate::cli::Args;
     use crate::config::Config;
+    use crate::session::SessionSummary;
 
     fn test_app() -> App {
-        App::new(
+        App::new_for_test(
             Config::default(),
             Args {
                 prompt: None,
@@ -564,6 +631,27 @@ mod tests {
         assert!(rendered.contains(" Agent "));
         assert!(rendered.contains(" Auto "));
         assert!(rendered.contains(" Manual "));
+    }
+
+    #[test]
+    fn renders_workspace_session_picker() {
+        let mut app = test_app();
+        app.session_picker = Some(SessionPicker {
+            sessions: vec![SessionSummary {
+                id: "12345678-1234-4234-8234-123456789abc".to_string(),
+                created_at: "2026-08-17T11:00:00Z".to_string(),
+                updated_at: "2026-08-17T12:00:00Z".to_string(),
+                title: "saved question".to_string(),
+                message_count: 4,
+            }],
+            selected: 1,
+        });
+
+        let rendered = render_text(&app);
+        assert!(rendered.contains("Restore a session for this directory"));
+        assert!(rendered.contains("Start a new session"));
+        assert!(rendered.contains("saved question"));
+        assert!(rendered.contains("4 messages"));
     }
 
     #[test]

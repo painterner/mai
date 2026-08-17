@@ -15,8 +15,9 @@ use crate::agent::{AgentEvent, AgentRun, AgentRunner, ApprovalMode, RiskLevel, T
 use crate::api::{ApiClient, ResponseEvent, ResponseStream};
 use crate::cli::Args;
 use crate::config::Config;
-use crate::conversation::Message;
+use crate::conversation::{Message, Role as ConversationRole};
 use crate::prompts;
+use crate::session::{PersistedSession, SessionStore, SessionSummary};
 use crate::ui;
 
 /// Chat message for display
@@ -56,6 +57,13 @@ impl fmt::Display for ChatMode {
 pub struct PendingApproval {
     pub tool: String,
     pub arguments: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionPicker {
+    pub sessions: Vec<SessionSummary>,
+    /// Zero selects "start a new session"; persisted sessions start at one.
+    pub selected: usize,
 }
 
 enum ActiveResponse {
@@ -177,10 +185,26 @@ pub struct App {
     response: Option<ActiveResponse>,
     /// Current model name
     pub model: String,
+    /// Startup/session-command restore picker.
+    pub session_picker: Option<SessionPicker>,
+    session_store: SessionStore,
+    session_created_at: String,
 }
 
 impl App {
     pub fn new(config: Config, args: Args) -> Result<Self> {
+        let workspace =
+            std::env::current_dir().context("Failed to determine workspace directory")?;
+        let session_store = SessionStore::for_workspace(&workspace)?;
+        Self::new_with_session_store(config, args, workspace, session_store)
+    }
+
+    pub(crate) fn new_with_session_store(
+        config: Config,
+        args: Args,
+        workspace: std::path::PathBuf,
+        session_store: SessionStore,
+    ) -> Result<Self> {
         let shell_enabled = args.shell_enabled();
         let model = args.model.unwrap_or_else(|| config.model.clone());
         let mut api = ApiClient::new(&config)?;
@@ -192,10 +216,16 @@ impl App {
         };
         let agent = AgentRunner::in_workspace(
             api.clone(),
-            std::env::current_dir().context("Failed to determine workspace directory")?,
+            workspace,
             ToolPermissions::workspace_write(shell_enabled),
             args.agent_max_steps,
         )?;
+
+        let sessions = session_store.list()?;
+        let session_picker = (!sessions.is_empty()).then_some(SessionPicker {
+            sessions,
+            selected: 0,
+        });
 
         let mut app = Self {
             input: String::new(),
@@ -214,25 +244,45 @@ impl App {
             agent,
             response: None,
             model: model.clone(),
+            session_picker,
+            session_store,
+            session_created_at: crate::session::now(),
         };
 
-        // Welcome message
-        app.messages.push(ChatMessage {
+        app.add_welcome_message();
+
+        Ok(app)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(config: Config, args: Args) -> Result<Self> {
+        let workspace =
+            std::env::current_dir().context("Failed to determine workspace directory")?;
+        let root = std::env::temp_dir().join(format!(
+            "{}-app-test-{}-{}",
+            crate::APP_NAME,
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let session_store = SessionStore::at(root, &workspace)?;
+        Self::new_with_session_store(config, args, workspace, session_store)
+    }
+
+    fn add_welcome_message(&mut self) {
+        self.messages.push(ChatMessage {
             role: Role::System,
             content: format!(
                 "✨ {} v{} | Provider: {} | Model: {} | Mode: {} / {} | Type /help for commands",
                 crate::APP_NAME,
                 env!("CARGO_PKG_VERSION"),
-                app.config.provider,
-                model,
-                app.mode,
-                app.approval_mode
+                self.config.provider,
+                self.model,
+                self.mode,
+                self.approval_mode
             ),
             is_streaming: false,
             collapsed: false,
         });
-
-        Ok(app)
     }
 
     /// Main application loop
@@ -442,6 +492,7 @@ impl App {
         self.pending_approval = None;
         self.waiting = false;
         self.status = String::new();
+        self.persist_or_report();
     }
 
     fn fail_response(&mut self, error: &anyhow::Error) {
@@ -519,6 +570,9 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+        if self.session_picker.is_some() {
+            return Ok(());
+        }
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 self.scroll_offset = self.scroll_offset.saturating_add(3);
@@ -557,6 +611,10 @@ impl App {
     }
 
     async fn handle_key(&mut self, key: event::KeyEvent) -> Result<()> {
+        if self.session_picker.is_some() {
+            return self.handle_session_picker_key(key);
+        }
+
         match (key.modifiers, key.code) {
             // Quit
             (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
@@ -666,6 +724,108 @@ impl App {
         Ok(())
     }
 
+    fn handle_session_picker_key(&mut self, key: event::KeyEvent) -> Result<()> {
+        let item_count = self
+            .session_picker
+            .as_ref()
+            .map(|picker| picker.sessions.len() + 1)
+            .unwrap_or(1);
+        match (key.modifiers, key.code) {
+            (KeyModifiers::CONTROL, KeyCode::Char('c'))
+            | (KeyModifiers::CONTROL, KeyCode::Char('d')) => self.running = false,
+            (_, KeyCode::Esc | KeyCode::Char('n')) => {
+                self.session_picker = None;
+                self.status = "Started a new session.".to_string();
+            }
+            (_, KeyCode::Up | KeyCode::Char('k')) => {
+                if let Some(picker) = self.session_picker.as_mut() {
+                    picker.selected = if picker.selected == 0 {
+                        item_count - 1
+                    } else {
+                        picker.selected - 1
+                    };
+                }
+            }
+            (_, KeyCode::Down | KeyCode::Char('j')) => {
+                if let Some(picker) = self.session_picker.as_mut() {
+                    picker.selected = (picker.selected + 1) % item_count;
+                }
+            }
+            (_, KeyCode::Enter) => {
+                let selected = self
+                    .session_picker
+                    .as_ref()
+                    .map(|picker| picker.selected)
+                    .unwrap_or(0);
+                if selected == 0 {
+                    self.session_picker = None;
+                    self.status = "Started a new session.".to_string();
+                } else if let Some(id) = self
+                    .session_picker
+                    .as_ref()
+                    .and_then(|picker| picker.sessions.get(selected - 1))
+                    .map(|session| session.id.clone())
+                {
+                    self.restore_session(&id)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn restore_session(&mut self, id: &str) -> Result<()> {
+        let session = self.session_store.load(id)?;
+        self.api.restore_session(session.id.clone());
+        self.api_history = session.messages;
+        self.session_created_at = session.created_at;
+        self.messages.clear();
+        self.add_welcome_message();
+        self.messages
+            .extend(self.api_history.iter().map(|message| ChatMessage {
+                role: match message.role {
+                    ConversationRole::User => Role::User,
+                    ConversationRole::Assistant => Role::Assistant,
+                },
+                content: message.content.clone(),
+                is_streaming: false,
+                collapsed: false,
+            }));
+        self.scroll_offset = 0;
+        self.session_picker = None;
+        self.status = format!("Restored session {}.", short_session_id(&session.id));
+        Ok(())
+    }
+
+    fn show_session_picker(&mut self) -> Result<()> {
+        let sessions = self.session_store.list()?;
+        if sessions.is_empty() {
+            self.status = "No saved sessions for this directory.".to_string();
+        } else {
+            self.session_picker = Some(SessionPicker {
+                sessions,
+                selected: 0,
+            });
+        }
+        Ok(())
+    }
+
+    fn persist_or_report(&mut self) {
+        if self.api_history.is_empty() {
+            return;
+        }
+        let session = PersistedSession::new(
+            self.api.session_id(),
+            self.session_store.workspace(),
+            self.session_created_at.clone(),
+            self.api_history.clone(),
+        );
+        if let Err(error) = self.session_store.save(&session) {
+            tracing::warn!("Failed to save session: {error:#}");
+            self.status = format!("Session save failed: {error}");
+        }
+    }
+
     async fn submit(&mut self) -> Result<()> {
         let input = self.input.clone();
         self.input.clear();
@@ -691,6 +851,7 @@ impl App {
         // Start streaming response
         self.waiting = true;
         self.status = "Thinking...".to_string();
+        self.persist_or_report();
 
         // Add placeholder for assistant response
         self.messages.push(ChatMessage {
@@ -728,6 +889,7 @@ impl App {
                         "📋 Available commands:",
                         "  /help, /h     - Show this help",
                         "  /clear, /c    - Clear chat history",
+                        "  /sessions, /s - Restore a session for this directory",
                         "  /model <name> - Switch model",
                         "  /agent on|off - Switch chat/agent mode",
                         "  /approval auto|manual - Set tool approval mode",
@@ -745,8 +907,11 @@ impl App {
                 self.messages.clear();
                 self.api_history.clear();
                 self.api.start_new_session();
+                self.session_created_at = crate::session::now();
+                self.add_welcome_message();
                 self.status = "Chat cleared. Started a new session.".to_string();
             }
+            "/sessions" | "/session" | "/s" => self.show_session_picker()?,
             "/model" | "/m" => {
                 if let Some(model) = parts.get(1) {
                     self.model = model.to_string();
@@ -839,12 +1004,16 @@ fn truncate(value: &str, max_chars: usize) -> String {
     }
 }
 
+fn short_session_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn test_app() -> App {
-        App::new(
+        App::new_for_test(
             Config::default(),
             Args {
                 prompt: None,
@@ -909,6 +1078,34 @@ mod tests {
     }
 
     #[test]
+    fn selected_session_restores_history_and_http_session_id() {
+        let mut app = test_app();
+        let session_id = "12345678-1234-4234-8234-123456789abc";
+        let saved = PersistedSession::new(
+            session_id,
+            app.session_store.workspace(),
+            "2026-08-17T12:00:00Z",
+            vec![
+                Message::user("saved question"),
+                Message::assistant("saved answer"),
+            ],
+        );
+        app.session_store.save(&saved).unwrap();
+
+        app.show_session_picker().unwrap();
+        app.session_picker.as_mut().unwrap().selected = 1;
+        app.handle_session_picker_key(event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+
+        assert!(app.session_picker.is_none());
+        assert_eq!(app.api.session_id(), session_id);
+        assert_eq!(app.api_history, saved.messages);
+        assert!(app.messages.iter().any(|message| {
+            message.role == Role::Assistant && message.content == "saved answer"
+        }));
+    }
+
+    #[test]
     fn tools_command_lists_only_currently_enabled_tools() {
         let mut app = test_app();
         app.handle_command("/tools").unwrap();
@@ -917,7 +1114,7 @@ mod tests {
         assert!(without_shell.contains("write_file"));
         assert!(!without_shell.contains("run_command"));
 
-        let mut app = App::new(
+        let mut app = App::new_for_test(
             Config::default(),
             Args {
                 prompt: None,

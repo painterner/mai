@@ -181,11 +181,16 @@ impl ApiClient {
 
     pub fn start_new_session(&self) -> String {
         let session_id = generate_session_id();
+        self.restore_session(session_id.clone());
+        session_id
+    }
+
+    pub fn restore_session(&self, session_id: impl Into<String>) {
+        let session_id = session_id.into();
         *self
             .session_id
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = session_id.clone();
-        session_id
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = session_id;
     }
 
     pub fn set_model(&mut self, model: &str) {

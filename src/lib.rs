@@ -8,4 +8,5 @@ pub mod config;
 pub mod conversation;
 mod markdown;
 pub mod prompts;
+pub mod session;
 mod ui;
