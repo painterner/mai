@@ -493,6 +493,7 @@ mod tests {
                 agent: false,
                 agent_max_steps: 12,
                 allow_shell: false,
+                no_shell: true,
                 debug: false,
             },
         )

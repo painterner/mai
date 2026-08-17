@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
             AgentRunner::in_workspace(
                 api,
                 std::env::current_dir().context("Failed to determine workspace directory")?,
-                ToolPermissions::workspace_write(args.allow_shell),
+                ToolPermissions::workspace_write(args.shell_enabled()),
                 args.agent_max_steps,
             )?
             .run(messages)

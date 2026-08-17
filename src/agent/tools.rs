@@ -5,7 +5,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::process::Command;
+
+use super::approval::{ApprovalRequirement, classify_tool};
+use super::sandbox;
 
 const MAX_FILE_BYTES: usize = 1024 * 1024;
 const MAX_OUTPUT_CHARS: usize = 100_000;
@@ -128,7 +130,7 @@ impl ToolRegistry {
         if self.permissions.shell {
             definitions.push(ToolDefinition {
                 name: "run_command",
-                description: "Run a shell command in the workspace and return its exit status and output.",
+                description: "Run a shell command in a network-disabled Linux sandbox with workspace-only writes and return its exit status and output.",
                 arguments: json!({
                     "type": "object",
                     "required": ["command"],
@@ -148,6 +150,10 @@ impl ToolRegistry {
             .expect("tool definitions must always serialize")
     }
 
+    pub fn approval_requirement(&self, tool: &str, arguments: &Value) -> ApprovalRequirement {
+        classify_tool(tool, arguments)
+    }
+
     pub async fn execute(&self, tool: &str, arguments: Value) -> Result<String> {
         match tool {
             "list_files" => self.list_files(parse_arguments(arguments)?),
@@ -161,7 +167,7 @@ impl ToolRegistry {
                 self.run_command(parse_arguments(arguments)?).await
             }
             "write_file" | "replace_in_file" => bail!("Workspace writes are disabled"),
-            "run_command" => bail!("Shell execution is disabled; restart with --allow-shell"),
+            "run_command" => bail!("Shell execution is disabled by --no-shell"),
             _ => bail!("Unknown tool: {tool}"),
         }
     }
@@ -303,17 +309,12 @@ impl ToolRegistry {
 
     async fn run_command(&self, arguments: RunCommandArgs) -> Result<String> {
         let timeout_seconds = arguments.timeout_seconds.unwrap_or(120).clamp(1, 300);
-        let mut command = Command::new("sh");
-        command
-            .arg("-lc")
-            .arg(&arguments.command)
-            .current_dir(&self.workspace)
-            .kill_on_drop(true);
-
-        let output = tokio::time::timeout(Duration::from_secs(timeout_seconds), command.output())
-            .await
-            .with_context(|| format!("Command timed out after {timeout_seconds} seconds"))?
-            .context("Failed to run command")?;
+        let output = sandbox::run_command(
+            &self.workspace,
+            &arguments.command,
+            Duration::from_secs(timeout_seconds),
+        )
+        .await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -30,13 +30,23 @@ pub struct Args {
     )]
     pub agent_max_steps: usize,
 
-    /// Allow the agent to run shell commands in the workspace
-    #[arg(long, default_value_t = false)]
+    /// Explicitly enable sandboxed shell commands (enabled by default)
+    #[arg(long, default_value_t = true, conflicts_with = "no_shell")]
     pub allow_shell: bool,
+
+    /// Disable the Agent's shell command tool
+    #[arg(long, default_value_t = false)]
+    pub no_shell: bool,
 
     /// Enable debug mode
     #[arg(short, long, default_value_t = false)]
     pub debug: bool,
+}
+
+impl Args {
+    pub fn shell_enabled(&self) -> bool {
+        self.allow_shell && !self.no_shell
+    }
 }
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -68,9 +78,18 @@ mod tests {
         .unwrap();
 
         assert!(args.agent);
-        assert!(args.allow_shell);
+        assert!(args.shell_enabled());
         assert_eq!(args.agent_max_steps, 5);
         assert_eq!(args.prompt.as_deref(), Some("check the project"));
+    }
+
+    #[test]
+    fn shell_is_enabled_by_default_and_can_be_disabled() {
+        let defaults = Args::try_parse_from([crate::APP_NAME]).unwrap();
+        assert!(defaults.shell_enabled());
+
+        let disabled = Args::try_parse_from([crate::APP_NAME, "--no-shell"]).unwrap();
+        assert!(!disabled.shell_enabled());
     }
 
     #[test]

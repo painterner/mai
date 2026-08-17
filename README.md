@@ -24,6 +24,7 @@ Gemini API support.
 - [Rust](https://rustup.rs/) (1.85+)
 - An API key for OpenAI or an OpenAI-compatible service (not needed for local
   servers that do not require authentication)
+- Linux `bubblewrap` (`bwrap`) for the default shell tool (or use `--no-shell`)
 
 ### Build & Run
 
@@ -87,8 +88,8 @@ directory:
 # File inspection, search, and workspace edits
 maicli --agent -p "Find duplicated error handling and refactor it"
 
-# Also allow build and test commands
-maicli --agent --allow-shell -p "Fix the failing tests and verify the result"
+# Build and test commands are enabled by default in the sandbox
+maicli --agent -p "Fix the failing tests and verify the result"
 
 # Limit the number of model/tool turns
 maicli --agent --agent-max-steps 6 -p "Summarize this project"
@@ -98,10 +99,23 @@ The default tools are `list_files`, `read_file`, `search_files`, `write_file`,
 and `replace_in_file`. File paths are restricted to the current workspace;
 absolute paths, parent traversal, and symlink escapes are rejected.
 
-Shell execution is disabled by default. `--allow-shell` enables
-`run_command`, which can execute arbitrary commands with the same permissions
-as the CLI and is not an operating-system sandbox. Enable it only for a
-workspace and model you trust.
+Shell execution is enabled by default on Linux and requires `bubblewrap` on
+`PATH`. Use `--no-shell` to remove `run_command` from the available tools;
+`--allow-shell` remains available as an explicit compatibility flag. Commands
+run inside an OS-enforced sandbox with:
+
+- a read-only host root and writable access only to the current workspace and
+  an ephemeral `/tmp`;
+- `.git`, `.agents`, and `.codex` below the workspace remounted read-only;
+- a separate PID, IPC, UTS, user, cgroup, and network namespace (network is
+  disabled);
+- a cleared environment with only a small non-secret allowlist;
+- a seccomp filter that rejects privilege, mount, tracing, kernel-module,
+  keyring, BPF, and namespace-escape system calls.
+
+If bubblewrap, user namespaces, or seccomp setup is unavailable, execution
+fails closed; it never falls back to the host shell. Command sandboxing is
+currently unavailable on non-Linux platforms.
 
 In interactive mode, start with `maicli --agent` or switch at runtime with
 `/agent on` and `/agent off`. Tool results are shown separately from the model
@@ -119,9 +133,22 @@ The input border has two clickable segmented controls in its upper-right
 corner:
 
 - `Chat / Agent` switches the conversation mode.
-- `Auto / Manual` controls tool approval. Auto executes Agent tool calls
-  immediately. Manual pauses before every tool call and replaces the mode
-  controls with clickable `Approve / Reject` actions.
+- `Auto / Manual` controls tool approval. Auto first applies deterministic
+  command rules. Narrow read/build commands run directly in the sandbox,
+  forbidden commands are rejected, and commands requiring review are sent to
+  a separate model approval review. Manual pauses before every non-forbidden
+  tool call and replaces the mode controls with clickable `Approve / Reject`
+  actions.
+
+The command rule engine safely splits only plain command chains joined by
+`&&`, `||`, `;`, or `|` and applies the most restrictive result. Shell
+expansion, redirection, assignments, globs, control flow, and nested shells are
+treated conservatively and require review. Automatic review uses an additional
+model call, enforces a low/medium/high/critical risk threshold, requires
+explicit user authorization for high-risk actions, denies critical risk, and
+fails closed on API, timeout, or parse errors. Approval is not a replacement
+for the sandbox: every approved command still executes inside the same fixed
+boundary.
 
 Mode controls are disabled while a response is running. Manual approval is an
 interactive TUI feature; single-prompt Agent runs remain automatic.
@@ -135,7 +162,8 @@ interactive TUI feature; single-prompt Agent runs remain automatic.
 | `--provider <gemini\|openai>` | API protocol to use |
 | `--agent` | Enable workspace Agent mode |
 | `--agent-max-steps <N>` | Maximum model/tool turns (default: 12) |
-| `--allow-shell` | Allow Agent mode to run shell commands |
+| `--allow-shell` | Explicitly enable sandboxed shell commands (the default) |
+| `--no-shell` | Disable the Agent shell command tool |
 | `-d, --debug` | Enable debug logging |
 
 ### Slash Commands (Interactive Mode)
@@ -147,6 +175,7 @@ interactive TUI feature; single-prompt Agent runs remain automatic.
 | `/model <name>`, `/m` | Switch model |
 | `/agent on\|off`, `/a on\|off` | Switch between Agent and chat modes |
 | `/approval auto\|manual` | Set Agent tool approval behavior |
+| `/tools` | Show the currently enabled Agent tools |
 | `/thinking`, `/think` | Expand/collapse the latest thinking block |
 | `/config` | Show current configuration |
 | `/quit`, `/q` | Exit |

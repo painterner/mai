@@ -11,7 +11,7 @@ use std::fmt;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::agent::{AgentEvent, AgentRun, AgentRunner, ApprovalMode, ToolPermissions};
+use crate::agent::{AgentEvent, AgentRun, AgentRunner, ApprovalMode, RiskLevel, ToolPermissions};
 use crate::api::{ApiClient, ResponseEvent, ResponseStream};
 use crate::cli::Args;
 use crate::config::Config;
@@ -69,6 +69,18 @@ enum ResponseUpdate {
     ToolApprovalRequested {
         tool: String,
         arguments: serde_json::Value,
+        risk: RiskLevel,
+        reason: String,
+    },
+    ApprovalReviewStarted {
+        tool: String,
+        reason: String,
+    },
+    ApprovalReviewFinished {
+        tool: String,
+        approved: bool,
+        risk: RiskLevel,
+        reason: String,
     },
     ToolStarted(String),
     ToolFinished {
@@ -93,9 +105,31 @@ impl ActiveResponse {
             },
             Self::Agent(run) => match run.try_recv() {
                 Ok(Ok(AgentEvent::Thinking { content })) => ResponseUpdate::Thinking(content),
-                Ok(Ok(AgentEvent::ToolApprovalRequested { tool, arguments })) => {
-                    ResponseUpdate::ToolApprovalRequested { tool, arguments }
+                Ok(Ok(AgentEvent::ToolApprovalRequested {
+                    tool,
+                    arguments,
+                    risk,
+                    reason,
+                })) => ResponseUpdate::ToolApprovalRequested {
+                    tool,
+                    arguments,
+                    risk,
+                    reason,
+                },
+                Ok(Ok(AgentEvent::ApprovalReviewStarted { tool, reason })) => {
+                    ResponseUpdate::ApprovalReviewStarted { tool, reason }
                 }
+                Ok(Ok(AgentEvent::ApprovalReviewFinished {
+                    tool,
+                    approved,
+                    risk,
+                    reason,
+                })) => ResponseUpdate::ApprovalReviewFinished {
+                    tool,
+                    approved,
+                    risk,
+                    reason,
+                },
                 Ok(Ok(AgentEvent::ToolStarted { tool })) => ResponseUpdate::ToolStarted(tool),
                 Ok(Ok(AgentEvent::ToolFinished { tool, result })) => {
                     ResponseUpdate::ToolFinished { tool, result }
@@ -147,6 +181,7 @@ pub struct App {
 
 impl App {
     pub fn new(config: Config, args: Args) -> Result<Self> {
+        let shell_enabled = args.shell_enabled();
         let model = args.model.unwrap_or_else(|| config.model.clone());
         let mut api = ApiClient::new(&config)?;
         api.set_model(&model);
@@ -158,7 +193,7 @@ impl App {
         let agent = AgentRunner::in_workspace(
             api.clone(),
             std::env::current_dir().context("Failed to determine workspace directory")?,
-            ToolPermissions::workspace_write(args.allow_shell),
+            ToolPermissions::workspace_write(shell_enabled),
             args.agent_max_steps,
         )?;
 
@@ -236,14 +271,38 @@ impl App {
                     self.status = "Thinking...".to_string();
                     continue;
                 }
-                ResponseUpdate::ToolApprovalRequested { tool, arguments } => {
+                ResponseUpdate::ToolApprovalRequested {
+                    tool,
+                    arguments,
+                    risk,
+                    reason,
+                } => {
                     self.finish_thinking();
-                    self.status = format!("Approve {tool}? Enter/Y: approve | Esc/N: reject");
+                    self.status =
+                        format!("Approve {tool} ({risk})? Enter/Y: approve | Esc/N: reject");
+                    let arguments = serde_json::to_string_pretty(&arguments)
+                        .unwrap_or_else(|_| arguments.to_string());
                     self.pending_approval = Some(PendingApproval {
                         tool,
-                        arguments: serde_json::to_string_pretty(&arguments)
-                            .unwrap_or_else(|_| arguments.to_string()),
+                        arguments: format!("risk: {risk}\nreason: {reason}\n{arguments}"),
                     });
+                    continue;
+                }
+                ResponseUpdate::ApprovalReviewStarted { tool, reason } => {
+                    self.finish_thinking();
+                    self.status = format!("Auto-reviewing {tool}: {reason}");
+                    continue;
+                }
+                ResponseUpdate::ApprovalReviewFinished {
+                    tool,
+                    approved,
+                    risk,
+                    reason,
+                } => {
+                    self.status = format!(
+                        "Auto-review {} {tool} ({risk}): {reason}",
+                        if approved { "approved" } else { "denied" }
+                    );
                     continue;
                 }
                 ResponseUpdate::ToolStarted(tool) => {
@@ -672,6 +731,7 @@ impl App {
                         "  /model <name> - Switch model",
                         "  /agent on|off - Switch chat/agent mode",
                         "  /approval auto|manual - Set tool approval mode",
+                        "  /tools        - Show currently enabled Agent tools",
                         "  /thinking     - Expand/collapse latest thinking",
                         "  /config       - Show current config",
                         "  /quit, /q     - Exit",
@@ -716,6 +776,21 @@ impl App {
                     self.status = format!("Current approval mode: {}", self.approval_mode);
                 }
             },
+            "/tools" => {
+                let tools = self
+                    .agent
+                    .tool_definitions()
+                    .into_iter()
+                    .map(|tool| format!("  {} - {}", tool.name, tool.description))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.messages.push(ChatMessage {
+                    role: Role::System,
+                    content: format!("🧰 Available Agent tools:\n{tools}"),
+                    is_streaming: false,
+                    collapsed: false,
+                });
+            }
             "/thinking" | "/think" => self.toggle_latest_thinking(),
             "/config" => {
                 self.messages.push(ChatMessage {
@@ -778,6 +853,7 @@ mod tests {
                 agent: false,
                 agent_max_steps: 12,
                 allow_shell: false,
+                no_shell: true,
                 debug: false,
             },
         )
@@ -830,5 +906,32 @@ mod tests {
         assert!(app.api_history.is_empty());
         assert_ne!(app.api.session_id(), previous);
         assert!(app.status.contains("new session"));
+    }
+
+    #[test]
+    fn tools_command_lists_only_currently_enabled_tools() {
+        let mut app = test_app();
+        app.handle_command("/tools").unwrap();
+        let without_shell = &app.messages.last().unwrap().content;
+        assert!(without_shell.contains("read_file"));
+        assert!(without_shell.contains("write_file"));
+        assert!(!without_shell.contains("run_command"));
+
+        let mut app = App::new(
+            Config::default(),
+            Args {
+                prompt: None,
+                model: None,
+                provider: None,
+                agent: true,
+                agent_max_steps: 12,
+                allow_shell: true,
+                no_shell: false,
+                debug: false,
+            },
+        )
+        .unwrap();
+        app.handle_command("/tools").unwrap();
+        assert!(app.messages.last().unwrap().content.contains("run_command"));
     }
 }

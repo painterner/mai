@@ -1,17 +1,21 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{fmt, result};
 
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::api::{ApiClient, ResponseEvent, ResponseStream};
-use crate::conversation::Message;
+use crate::conversation::{Message, Role};
 use crate::prompts;
 
-use super::{AgentAction, ToolRegistry, parse_action};
+use super::{AgentAction, RiskLevel, RuleDecision, ToolRegistry, parse_action};
+
+const APPROVAL_REVIEW_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub trait CompletionBackend: Send + Sync {
     fn complete_stream(
@@ -49,11 +53,35 @@ impl fmt::Display for ApprovalMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
-    Thinking { content: String },
-    ToolApprovalRequested { tool: String, arguments: Value },
-    ToolStarted { tool: String },
-    ToolFinished { tool: String, result: String },
-    Final { content: String },
+    Thinking {
+        content: String,
+    },
+    ToolApprovalRequested {
+        tool: String,
+        arguments: Value,
+        risk: RiskLevel,
+        reason: String,
+    },
+    ApprovalReviewStarted {
+        tool: String,
+        reason: String,
+    },
+    ApprovalReviewFinished {
+        tool: String,
+        approved: bool,
+        risk: RiskLevel,
+        reason: String,
+    },
+    ToolStarted {
+        tool: String,
+    },
+    ToolFinished {
+        tool: String,
+        result: String,
+    },
+    Final {
+        content: String,
+    },
 }
 
 pub struct AgentRun {
@@ -117,6 +145,10 @@ impl AgentRunner {
             system_prompt,
             max_steps,
         })
+    }
+
+    pub fn tool_definitions(&self) -> Vec<super::ToolDefinition> {
+        self.tools.definitions()
     }
 
     pub fn start(&self, messages: Vec<Message>) -> AgentRun {
@@ -203,23 +235,59 @@ impl AgentRunner {
 
             match action {
                 AgentAction::ToolCall { tool, arguments } => {
-                    let approved = if approval_mode == ApprovalMode::Manual {
-                        send_event(
-                            sender,
-                            AgentEvent::ToolApprovalRequested {
-                                tool: tool.clone(),
-                                arguments: arguments.clone(),
-                            },
-                        )
-                        .await;
-                        approval_receiver
-                            .as_mut()
-                            .context("Manual approval requires an approval channel")?
-                            .recv()
-                            .await
-                            .context("Tool approval channel closed")?
-                    } else {
-                        true
+                    let requirement = self.tools.approval_requirement(&tool, &arguments);
+                    let (approved, decline_reason) = match requirement.decision {
+                        RuleDecision::Forbidden => (false, requirement.reason.clone()),
+                        _ if approval_mode == ApprovalMode::Manual => {
+                            send_event(
+                                sender,
+                                AgentEvent::ToolApprovalRequested {
+                                    tool: tool.clone(),
+                                    arguments: arguments.clone(),
+                                    risk: requirement.risk,
+                                    reason: requirement.reason.clone(),
+                                },
+                            )
+                            .await;
+                            let approved = approval_receiver
+                                .as_mut()
+                                .context("Manual approval requires an approval channel")?
+                                .recv()
+                                .await
+                                .context("Tool approval channel closed")?;
+                            (approved, "The user rejected this tool call".to_string())
+                        }
+                        RuleDecision::Allow => (true, String::new()),
+                        RuleDecision::Review => {
+                            send_event(
+                                sender,
+                                AgentEvent::ApprovalReviewStarted {
+                                    tool: tool.clone(),
+                                    reason: requirement.reason.clone(),
+                                },
+                            )
+                            .await;
+                            let outcome = self
+                                .review_tool(
+                                    &messages,
+                                    &tool,
+                                    &arguments,
+                                    requirement.risk,
+                                    &requirement.reason,
+                                )
+                                .await;
+                            send_event(
+                                sender,
+                                AgentEvent::ApprovalReviewFinished {
+                                    tool: tool.clone(),
+                                    approved: outcome.approved,
+                                    risk: outcome.risk,
+                                    reason: outcome.reason.clone(),
+                                },
+                            )
+                            .await;
+                            (outcome.approved, outcome.reason)
+                        }
                     };
 
                     let result = if approved {
@@ -229,7 +297,7 @@ impl AgentRunner {
                             Err(error) => format!("ERROR: {error:#}"),
                         }
                     } else {
-                        "DECLINED: The user rejected this tool call.".to_string()
+                        format!("DECLINED: {decline_reason}.")
                     };
                     send_event(
                         sender,
@@ -259,6 +327,129 @@ impl AgentRunner {
             self.max_steps
         )
     }
+
+    async fn review_tool(
+        &self,
+        messages: &[Message],
+        tool: &str,
+        arguments: &Value,
+        rule_risk: RiskLevel,
+        rule_reason: &str,
+    ) -> ReviewOutcome {
+        match self
+            .try_review_tool(messages, tool, arguments, rule_risk, rule_reason)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => ReviewOutcome {
+                approved: false,
+                risk: rule_risk.max(RiskLevel::High),
+                reason: format!("Automatic approval review failed closed: {error:#}"),
+            },
+        }
+    }
+
+    async fn try_review_tool(
+        &self,
+        messages: &[Message],
+        tool: &str,
+        arguments: &Value,
+        rule_risk: RiskLevel,
+        rule_reason: &str,
+    ) -> Result<ReviewOutcome> {
+        let user_context = messages
+            .iter()
+            .filter(|message| {
+                message.role == Role::User && !message.content.starts_with("The tool `")
+            })
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+        let request = serde_json::to_string_pretty(&serde_json::json!({
+            "user_authorization_context": user_context,
+            "proposed_action": {"tool": tool, "arguments": arguments},
+            "rule_risk_floor": rule_risk,
+            "rule_reason": rule_reason,
+        }))?;
+        let mut stream = self.backend.complete_stream(
+            Some(prompts::approval_reviewer()),
+            &[Message::user(request)],
+        )?;
+        let response = tokio::time::timeout(APPROVAL_REVIEW_TIMEOUT, async {
+            let mut response = String::new();
+            while let Some(event) = stream.recv().await {
+                if let ResponseEvent::Content(content) = event? {
+                    response.push_str(&content);
+                }
+            }
+            Result::<String>::Ok(response)
+        })
+        .await
+        .context("Automatic approval review timed out")??;
+
+        let verdict: ReviewerVerdict = serde_json::from_str(strip_json_fence(&response))
+            .context("Reviewer returned invalid JSON")?;
+        let risk = rule_risk.max(verdict.risk);
+        let approved = verdict.decision == ReviewDecision::Allow
+            && match risk {
+                RiskLevel::Low | RiskLevel::Medium => true,
+                RiskLevel::High => verdict.authorization == UserAuthorization::Explicit,
+                RiskLevel::Critical => false,
+            };
+        let reason = if approved {
+            verdict.reason
+        } else if verdict.decision == ReviewDecision::Allow {
+            format!(
+                "Reviewer approval did not meet the {risk}-risk authorization threshold: {}",
+                verdict.reason
+            )
+        } else {
+            verdict.reason
+        };
+        Ok(ReviewOutcome {
+            approved,
+            risk,
+            reason,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct ReviewOutcome {
+    approved: bool,
+    risk: RiskLevel,
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewerVerdict {
+    decision: ReviewDecision,
+    risk: RiskLevel,
+    authorization: UserAuthorization,
+    reason: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ReviewDecision {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum UserAuthorization {
+    Explicit,
+    Implicit,
+    None,
+}
+
+fn strip_json_fence(response: &str) -> &str {
+    let trimmed = response.trim();
+    let trimmed = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .unwrap_or(trimmed);
+    trimmed.strip_suffix("```").unwrap_or(trimmed).trim()
 }
 
 async fn send_event(sender: Option<&mpsc::Sender<Result<AgentEvent>>>, event: AgentEvent) {
@@ -311,7 +502,7 @@ mod tests {
             system_prompt: Option<&str>,
             messages: &[Message],
         ) -> Result<ResponseStream> {
-            assert!(system_prompt.unwrap().contains("list_files"));
+            assert!(!system_prompt.unwrap().is_empty());
             self.requests.lock().unwrap().push(messages.to_vec());
             let events = self
                 .responses
@@ -495,5 +686,87 @@ mod tests {
                 content: "done".to_string()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn auto_mode_reviews_unknown_commands_and_honors_denial() {
+        let workspace = TestWorkspace::new();
+        let backend = MockBackend::new(&[
+            r#"{"type":"tool_call","tool":"run_command","arguments":{"command":"python task.py"}}"#,
+            r#"{"decision":"deny","risk":"high","authorization":"none","reason":"Not authorized by the user"}"#,
+            r#"{"type":"final","content":"command denied"}"#,
+        ]);
+        let tools =
+            ToolRegistry::new(&workspace.0, ToolPermissions::workspace_write(true)).unwrap();
+        let runner = AgentRunner::new(backend, tools, 4).unwrap();
+        let mut run = runner.start(vec![Message::user("Inspect the project")]);
+
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::ApprovalReviewStarted { .. }
+        ));
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::ApprovalReviewFinished {
+                approved: false,
+                risk: RiskLevel::High,
+                ..
+            }
+        ));
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::ToolFinished { ref result, .. } if result.contains("DECLINED")
+        ));
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::Final { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn high_risk_auto_review_requires_explicit_authorization() {
+        let workspace = TestWorkspace::new();
+        let backend = MockBackend::new(&[
+            r#"{"decision":"allow","risk":"high","authorization":"implicit","reason":"Seems related"}"#,
+        ]);
+        let tools =
+            ToolRegistry::new(&workspace.0, ToolPermissions::workspace_write(true)).unwrap();
+        let runner = AgentRunner::new(backend, tools, 2).unwrap();
+
+        let outcome = runner
+            .review_tool(
+                &[Message::user("Inspect the project")],
+                "run_command",
+                &serde_json::json!({"command": "git reset --hard HEAD"}),
+                RiskLevel::High,
+                "Git command can discard changes",
+            )
+            .await;
+
+        assert!(!outcome.approved);
+        assert_eq!(outcome.risk, RiskLevel::High);
+    }
+
+    #[tokio::test]
+    async fn invalid_auto_review_response_fails_closed() {
+        let workspace = TestWorkspace::new();
+        let backend = MockBackend::new(&["not-json"]);
+        let tools =
+            ToolRegistry::new(&workspace.0, ToolPermissions::workspace_write(true)).unwrap();
+        let runner = AgentRunner::new(backend, tools, 2).unwrap();
+
+        let outcome = runner
+            .review_tool(
+                &[Message::user("Run the helper")],
+                "run_command",
+                &serde_json::json!({"command": "python task.py"}),
+                RiskLevel::Medium,
+                "Unknown command",
+            )
+            .await;
+
+        assert!(!outcome.approved);
+        assert_eq!(outcome.risk, RiskLevel::High);
+        assert!(outcome.reason.contains("failed closed"));
     }
 }
