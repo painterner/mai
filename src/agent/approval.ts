@@ -43,6 +43,7 @@ export function classifyTool(tool: string, args: unknown): ApprovalRequirement {
     case 'list_files':
     case 'read_file':
     case 'search_files':
+    case 'load_skill':
       return allow('Read-only workspace tool');
     case 'write_file':
     case 'replace_in_file':

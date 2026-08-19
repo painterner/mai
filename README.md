@@ -90,6 +90,24 @@ npm run build && npm start
 4. Results feed back to the model as `functionResponse` parts and the loop
    repeats until the model stops calling tools.
 
+## Skills
+
+Mai discovers [Agent Skills](https://code.claude.com/docs/en/skills) —
+`SKILL.md` packages of task-specific instructions — from `~/.agents/skills`
+(personal, cross-project) and `<workspace>/.agents/skills` (project-local),
+merged by name with the workspace copy winning on a collision. Nothing
+extra to install: a skill written for Claude Code or Codex works here
+unmodified, same file format. `/skills` lists what was found; a one-line
+`name: description` catalog goes into the system prompt for every skill
+*not* marked `disable-model-invocation: true` in its frontmatter, and the
+model calls the `load_skill` tool with a skill's name to pull its full
+instructions into context on demand — skills aren't dumped into the system
+prompt wholesale, so having many (or large) ones installed doesn't bloat
+every request. `src/agent/skills.ts` has the discovery/parsing; it's a
+deliberately minimal YAML-subset parser (flat scalars, quoted strings,
+`>`/`|` block scalars) rather than a real YAML dependency, sized to what
+`SKILL.md` frontmatter actually uses.
+
 ## Switching to the GUI
 
 Type `/gui` to hand this conversation off to [`../mai-cli-gui`](../mai-cli-gui)
@@ -119,6 +137,8 @@ terminal.
   `realpath`).
 - `src/agent/approval.ts` — the risk-classification rule engine (ported
   from Rust, including its small shell-script tokenizer).
+- `src/agent/skills.ts` — discovers and parses `SKILL.md` files from
+  `~/.agents/skills` + `<workspace>/.agents/skills`; see "Skills" above.
 - `src/agent/loop.ts` — orchestrates model turns, tool execution, and the
   approval gate; yields UI-facing events.
 - `src/sandbox/sidecar.ts` — talks JSON-over-stdio to `mai-sandbox`.

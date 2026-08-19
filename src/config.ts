@@ -1,12 +1,18 @@
 import path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
-// Load .env from the current working directory (where the user launched
-// `mai` from) before reading anything below — same convention as the
-// sibling Rust CLI (`mail-cli-rust`), so a copied-over .env just works.
+// Load .env — workspace-level first (the directory `mai` was launched
+// from), same convention as the sibling Rust CLI (`mail-cli-rust`) — then
+// this project's own .env as a fallback for anything the workspace didn't
+// set (dotenv.config() never overrides an already-set var, so the
+// workspace's values always win). Mirrors providers.json's "follows the
+// workspace, falls back to the install dir" lookup — lets `mai` run from
+// any directory using one central .env instead of requiring a copy in
+// every workspace.
 dotenv.config();
+dotenv.config({ path: path.join(projectRoot(), '.env') });
 
 /** Wire protocol a provider entry speaks — decides which `LlmClient` class handles it. */
 export type ProviderKind = 'gemini' | 'openai';
@@ -106,14 +112,60 @@ export function loadProviders(): ProviderDef[] {
 }
 
 /**
- * Picks the active entry: `API_PROVIDER` matched against providers.json's
- * `name` fields (case-insensitively), falling back to the first entry so an
- * unset `API_PROVIDER` still works, same as before providers.json existed.
+ * Picks the active entry: `preferredName` (the last provider `/model` saved
+ * to state.json, if any) wins, then `API_PROVIDER` matched against
+ * providers.json's `name` fields (case-insensitively), then the first
+ * entry — so an unset `API_PROVIDER` and a fresh workspace with no saved
+ * state still work, same as before providers.json existed.
  */
-export function resolveProviderDef(providers: ProviderDef[]): ProviderDef {
-  const raw = process.env.API_PROVIDER?.trim().toLowerCase();
+export function resolveProviderDef(providers: ProviderDef[], preferredName?: string): ProviderDef {
+  const raw = (preferredName ?? process.env.API_PROVIDER)?.trim().toLowerCase();
   const match = raw ? providers.find((p) => p.name.toLowerCase() === raw) : undefined;
   return match ?? providers[0];
+}
+
+/** What `/model` last switched to — persisted so it survives a restart. */
+export interface SavedState {
+  provider: string;
+  model: string;
+}
+
+const STATE_DIR = '.mai';
+const STATE_FILE = 'state.json';
+
+function statePath(workspace: string): string {
+  return path.join(workspace, STATE_DIR, STATE_FILE);
+}
+
+/**
+ * Reads `.mai/state.json` from the workspace — deliberately workspace-only
+ * (no project-root fallback like `.env`/`providers.json`): "what I last
+ * picked" is inherently per-project, not something to share across
+ * unrelated workspaces. Best-effort: a missing or corrupt file just means
+ * "nothing saved yet", not a startup error.
+ */
+export function loadState(workspace: string): SavedState | null {
+  const p = statePath(workspace);
+  if (!existsSync(p)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(p, 'utf8'));
+    if (raw && typeof raw.provider === 'string' && typeof raw.model === 'string') {
+      return { provider: raw.provider, model: raw.model };
+    }
+  } catch {
+    // Corrupt state.json — fall through to "nothing saved" rather than crash.
+  }
+  return null;
+}
+
+/** Called after a successful `/model` switch; failures are non-fatal. */
+export function saveState(workspace: string, provider: string, model: string): void {
+  try {
+    mkdirSync(path.join(workspace, STATE_DIR), { recursive: true });
+    writeFileSync(statePath(workspace), `${JSON.stringify({ provider, model }, null, 2)}\n`);
+  } catch {
+    // A session that can't persist its pick still works — just won't stick after restart.
+  }
 }
 
 /**
@@ -136,7 +188,9 @@ export function configForProvider(base: Config, def: ProviderDef): Config {
 
 export function loadConfig(): Config {
   const providers = loadProviders();
-  const def = resolveProviderDef(providers);
+  const workspace = process.cwd();
+  const saved = loadState(workspace);
+  const def = resolveProviderDef(providers, saved?.provider);
 
   const base: Config = {
     provider: def.name,
@@ -146,13 +200,19 @@ export function loadConfig(): Config {
     baseUrl: def.baseUrl,
     maxOutputTokens: Number(process.env.MAI_MAX_TOKENS) || DEFAULT_MAX_OUTPUT_TOKENS,
     temperature: process.env.MAI_TEMPERATURE ? Number(process.env.MAI_TEMPERATURE) : DEFAULT_TEMPERATURE,
-    workspace: process.cwd(),
+    workspace,
     allowShell: envFlag('MAI_ALLOW_SHELL', true),
     sandboxBinary: resolveSandboxBinary(),
     providers,
   };
 
-  return configForProvider(base, def);
+  const config = configForProvider(base, def);
+  // The saved model is more specific than providers.json's default or a
+  // {NAME}_MODEL env override — it's literally what /model was last set to
+  // for this provider — so it wins, but only once we've confirmed `def` is
+  // that same saved provider (resolveProviderDef already did that match).
+  if (saved && saved.provider === def.name) config.model = saved.model;
+  return config;
 }
 
 /**

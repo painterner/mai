@@ -8,7 +8,7 @@ import { StatusBar } from './components/StatusBar.js';
 import { ApprovalPrompt } from './components/ApprovalPrompt.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import { SLASH_COMMANDS } from './commands.js';
-import { loadConfig, resolveGuiBinary, configForProvider, type Config, type ProviderDef } from './config.js';
+import { loadConfig, resolveGuiBinary, configForProvider, saveState, type Config, type ProviderDef } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
 import { ToolRegistry } from './agent/tools.js';
 import { runAgentTurn, buildSystemInstruction, type AgentEvent, type ApprovalRequest } from './agent/loop.js';
@@ -69,7 +69,7 @@ export default function App() {
         );
         if (cancelled) return;
         toolsRef.current = registry;
-        systemInstructionRef.current = buildSystemInstruction(registry.workspacePath);
+        systemInstructionRef.current = buildSystemInstruction(registry.workspacePath, registry.skillCatalog);
 
         const handoff = await readAndClearHandoff(registry.workspacePath).catch(() => null);
         if (handoff) {
@@ -160,7 +160,8 @@ export default function App() {
   }
 
   function runCommand(raw: string) {
-    const cmd = raw.trim().split(/\s+/)[0].toLowerCase();
+    const parts = raw.trim().split(/\s+/);
+    const cmd = parts[0].toLowerCase();
     switch (cmd) {
       case '/help':
         pushSystem(SLASH_COMMANDS.map((c) => `${c.name.padEnd(10)}${c.description}`).join('\n'));
@@ -171,6 +172,65 @@ export default function App() {
         break;
       case '/model':
         openModelPicker();
+        break;
+      case '/skills': {
+        const skills = toolsRef.current?.skillList;
+        if (!skills) {
+          pushSystem('Still starting up — try again in a moment.');
+          break;
+        }
+
+        const name = parts[1];
+        if (!name) {
+          if (!skills.length) {
+            pushSystem('No skills found under ~/.agents/skills or <workspace>/.agents/skills.');
+            break;
+          }
+          pushSystem(
+            skills
+              .map((s) => {
+                const tag = s.modelInvocable ? s.source : `${s.source}, manual-only`;
+                return `${s.name} (${tag}) — ${s.description}`;
+              })
+              .join('\n'),
+          );
+          break;
+        }
+
+        // `/skills <name>` is the manual-trigger path: unlike the model's own
+        // load_skill tool call, this works for manual-only skills too (that's
+        // the whole point of the flag — gated behind an explicit trigger,
+        // which this is) since it never goes through ToolRegistry.execute.
+        const skill = skills.find((s) => s.name === name);
+        if (!skill) {
+          pushError(`No skill named "${name}" — try /skills to see what's available.`);
+          break;
+        }
+        if (busy) {
+          pushError('Finish or interrupt the current turn first (Esc), then try /skills again.');
+          break;
+        }
+        const extra = parts.slice(2).join(' ').trim();
+        // Some skills gate themselves on "only when the user explicitly
+        // invokes /foo" — a slash command from whatever tool the skill was
+        // authored for (Claude Code, Codex, ...), which mai doesn't have.
+        // Spell out plainly that /skills <name> *is* that explicit
+        // invocation, so the model doesn't second-guess the precondition
+        // just because it doesn't see that exact command name.
+        const invocationNote =
+          `The user just explicitly invoked this skill manually via "/skills ${skill.name}" in this ` +
+          'CLI — treat that as satisfying any "only when the user explicitly invokes ..." precondition ' +
+          "below, even if the exact command name mentioned there differs (mai doesn't have per-skill " +
+          'slash commands).';
+        const turnText = extra
+          ? `${invocationNote}\n\n${skill.body}\n\n---\n\nUser-supplied argument for this skill: ${extra}`
+          : `${invocationNote}\n\n${skill.body}`;
+        pushHistory({ id: genId(), role: 'user', content: raw.trim(), timestamp: Date.now() });
+        void runTurn(turnText);
+        break;
+      }
+      case '/system':
+        pushSystem(systemInstructionRef.current || 'Still starting up — try again in a moment.');
         break;
       case '/theme':
         pushSystem("Theme switching isn't implemented yet — this build ships one dark theme.");
@@ -303,6 +363,7 @@ export default function App() {
     next.model = model;
     configRef.current = next;
     clientRef.current = createLlmClient(next);
+    saveState(next.workspace, next.provider, next.model);
     pushSystem(`Switched model: provider=${next.provider} model=${model} base url=${next.baseUrl}`);
   }
 

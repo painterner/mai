@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import readline from 'node:readline';
-import { loadConfig, configForProvider, type Config } from './config.js';
+import { loadConfig, configForProvider, saveState, type Config } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
 import { ToolRegistry } from './agent/tools.js';
 import { runAgentTurn, buildSystemInstruction, type AgentEvent, type ApprovalRequest } from './agent/loop.js';
@@ -107,7 +107,7 @@ async function init() {
     { write: true, shell: config.allowShell },
     config.sandboxBinary,
   );
-  systemInstruction = buildSystemInstruction(tools.workspacePath);
+  systemInstruction = buildSystemInstruction(tools.workspacePath, tools.skillCatalog);
 
   let resumedMessages: Message[] = [];
   const handoff = await readAndClearHandoff(tools.workspacePath).catch(() => null);
@@ -202,6 +202,7 @@ async function init() {
         }
         config = { ...configForProvider(config, def), model: cmd.model };
         client = createLlmClient(config);
+        saveState(config.workspace, config.provider, config.model);
         emit({ type: 'modelChanged', provider: config.provider, model: config.model, baseUrl: config.baseUrl });
         break;
       }

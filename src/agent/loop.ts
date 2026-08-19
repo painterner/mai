@@ -144,8 +144,14 @@ export async function* runAgentTurn(
   return contents;
 }
 
-export function buildSystemInstruction(workspace: string): string {
-  return [
+/**
+ * `skillCatalog` is a pre-formatted "- name: description" listing (see
+ * `ToolRegistry.skillCatalog` / `formatSkillCatalog`) — passed in rather
+ * than a `Skill[]` so this module doesn't need to import skills.ts just to
+ * re-derive text it's handed either way.
+ */
+export function buildSystemInstruction(workspace: string, skillCatalog = ''): string {
+  const lines = [
     'You are Mai, an autonomous coding agent working inside this workspace:',
     '',
     workspace,
@@ -159,5 +165,17 @@ export function buildSystemInstruction(workspace: string): string {
       'them before they run and may be declined — if one is declined, adapt instead of retrying ' +
       'the same call. Do not claim a change or verification that was not actually performed. ' +
       'When the task is complete, reply with a concise plain-text summary and no further tool calls.',
-  ].join('\n');
+  ];
+
+  if (skillCatalog) {
+    lines.push(
+      '',
+      'Available skills — each is packaged instructions for a specific kind of task. When one ' +
+        "matches what the user is asking, call load_skill with its exact name to fetch the full " +
+        'instructions before proceeding, and follow them in place of your own default approach:',
+      skillCatalog,
+    );
+  }
+
+  return lines.join('\n');
 }

@@ -3,13 +3,16 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { classifyTool, type ApprovalRequirement } from './approval.js';
+import { discoverSkills, formatSkillCatalog, type Skill } from './skills.js';
 import { runSandboxed } from '../sandbox/sidecar.js';
 import type { ToolDeclaration } from '../llm/types.js';
+
+export type { Skill } from './skills.js';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_OUTPUT_CHARS = 100_000;
 const MAX_SEARCH_RESULTS = 100;
-const SKIPPED_DIRS = new Set(['.git', 'target', 'node_modules', 'dist', '.mai']);
+const SKIPPED_DIRS = new Set(['.git', 'target', 'node_modules', 'dist', '.mai', '.agents']);
 
 export type { ToolDeclaration };
 
@@ -23,6 +26,7 @@ export class ToolRegistry {
     private readonly workspace: string,
     private readonly permissions: ToolPermissions,
     private readonly sandboxBinary: string | null,
+    private readonly skills: Skill[],
   ) {}
 
   static async create(
@@ -37,11 +41,22 @@ export class ToolRegistry {
     if (!stat.isDirectory()) {
       throw new Error(`Workspace is not a directory: ${workspace}`);
     }
-    return new ToolRegistry(real, permissions, sandboxBinary);
+    const skills = await discoverSkills(real);
+    return new ToolRegistry(real, permissions, sandboxBinary, skills);
   }
 
   get workspacePath(): string {
     return this.workspace;
+  }
+
+  /** Every skill found under `~/.agents/skills` and `<workspace>/.agents/skills`, for `/skills`. */
+  get skillList(): Skill[] {
+    return this.skills;
+  }
+
+  /** Formatted "- name: description" catalog of model-invocable skills, for the system prompt. */
+  get skillCatalog(): string {
+    return formatSkillCatalog(this.skills);
   }
 
   definitions(): ToolDeclaration[] {
@@ -125,6 +140,20 @@ export class ToolRegistry {
       });
     }
 
+    if (this.skills.some((s) => s.modelInvocable)) {
+      definitions.push({
+        name: 'load_skill',
+        description:
+          'Load the full instructions for a skill listed in the system prompt, by its exact name. ' +
+          'Call this before following a skill — the system prompt only has its one-line description.',
+        parameters: {
+          type: 'object',
+          required: ['name'],
+          properties: { name: { type: 'string' } },
+        },
+      });
+    }
+
     return definitions;
   }
 
@@ -154,9 +183,22 @@ export class ToolRegistry {
       case 'run_command':
         if (!this.permissions.shell) throw new Error('Shell execution is disabled');
         return this.runCommand(str(record.command), num(record.timeout_seconds));
+      case 'load_skill':
+        return this.loadSkill(str(record.name));
       default:
         throw new Error(`Unknown tool: ${tool}`);
     }
+  }
+
+  private loadSkill(name: string): string {
+    const skill = this.skills.find((s) => s.name === name);
+    if (!skill || !skill.modelInvocable) {
+      const available = this.skills.filter((s) => s.modelInvocable).map((s) => s.name);
+      throw new Error(
+        `No model-invocable skill named "${name}". Available: ${available.length ? available.join(', ') : '(none)'}`,
+      );
+    }
+    return skill.body;
   }
 
   private async listFiles(input: string): Promise<string> {
