@@ -13,5 +13,8 @@ export function createLlmClient(config: Config): LlmClient {
     maxOutputTokens: config.maxOutputTokens,
     temperature: config.temperature,
   };
-  return config.provider === 'openai' ? new OpenAiClient(opts) : new GeminiClient(opts);
+  // `kind` is the wire protocol (there can be many `provider` *names* of
+  // each kind — Groq, DeepSeek, a local vLLM server, ... all speak the
+  // OpenAI-compatible shape); `provider` is just the providers.json label.
+  return config.kind === 'openai' ? new OpenAiClient(opts) : new GeminiClient(opts);
 }

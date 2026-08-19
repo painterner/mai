@@ -1,0 +1,44 @@
+[
+  {
+    "name": "gemini",
+    "kind": "gemini",
+    "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+    "apiKeyEnv": "GEMINI_API_KEY",
+    "model": "gemini-2.5-flash"
+  },
+  {
+    "name": "openai",
+    "kind": "openai",
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKeyEnv": "OPENAI_API_KEY",
+    "model": "gpt-4o-mini"
+  },
+  {
+    "name": "groq",
+    "kind": "openai",
+    "baseUrl": "https://api.groq.com/openai/v1",
+    "apiKeyEnv": "GROQ_API_KEY",
+    "model": "llama-3.3-70b-versatile"
+  },
+  {
+    "name": "deepseek",
+    "kind": "openai",
+    "baseUrl": "https://api.deepseek.com/v1",
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "model": "deepseek-chat"
+  },
+  {
+    "name": "openrouter",
+    "kind": "openai",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "apiKeyEnv": "OPENROUTER_API_KEY",
+    "model": "anthropic/claude-3.5-sonnet"
+  },
+  {
+    "name": "ollama-local",
+    "kind": "openai",
+    "baseUrl": "http://localhost:11434/v1",
+    "apiKeyEnv": "OLLAMA_API_KEY",
+    "model": "llama3.1"
+  }
+]

@@ -49,4 +49,12 @@ export interface LlmClient {
     tools: ToolDeclaration[],
     signal?: AbortSignal,
   ): AsyncGenerator<StreamEvent, void, unknown>;
+
+  /**
+   * Hits the provider's model-discovery route and returns the model ids
+   * actually available to this API key, sorted alphabetically — used by
+   * `/model` to build the interactive picker rather than trusting a
+   * hardcoded list that drifts out of date.
+   */
+  listModels(): Promise<string[]>;
 }

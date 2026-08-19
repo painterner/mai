@@ -1,12 +1,13 @@
 # Mai — a coding agent (Ink terminal UI)
 
 An Ink (React-for-terminals) CLI agent, in the same family as Gemini CLI /
-Codex CLI / Claude Code's terminal front-ends. It talks to **Gemini or any
-OpenAI-compatible API** (`API_PROVIDER=gemini|openai` — see below) with
-native function calling, can read/search/write files in the current
-workspace, and runs shell commands through a **Rust sidecar** that sandboxes
-them (bubblewrap + a hand-built seccomp filter — see
-[`../mail-cli-rust`](../mail-cli-rust)). Risky or destructive actions
+Codex CLI / Claude Code's terminal front-ends. It talks to **any number of
+providers declared in `providers.json`** — Gemini's native protocol or
+anything OpenAI-compatible (real OpenAI, Groq, DeepSeek, OpenRouter, a local
+vLLM/Ollama server, ...) — with native function calling, can read/search/write
+files in the current workspace, and runs shell commands through a **Rust
+sidecar** that sandboxes them (bubblewrap + a hand-built seccomp filter —
+see [`../mail-cli-rust`](../mail-cli-rust)). Risky or destructive actions
 pause for interactive approval before they run.
 
 ## Setup
@@ -15,6 +16,25 @@ pause for interactive approval before they run.
 npm install
 cp .env.example .env   # then fill in GEMINI_API_KEY (or set API_PROVIDER=openai + OPENAI_API_KEY)
 ```
+
+### Providers
+
+`providers.json` (in this directory) is the list of providers Mai can talk
+to — each entry has a `name`, a wire `kind` (`"gemini"` or `"openai"`-
+compatible), a `baseUrl`, a default `model`, and an `apiKeyEnv` naming which
+`.env` var holds its key. Ships with `gemini` + `openai`; see
+`providers.example.json` for more (Groq, DeepSeek, OpenRouter, a local
+Ollama server). To add a provider: append an entry and set its `apiKeyEnv`
+var in `.env`. `API_PROVIDER` picks which entry is active at startup by
+`name`; `/model` in the running CLI (or the **Model** button in the GUI)
+switches provider and model at runtime without restarting — it fetches the
+live list from each provider's model-discovery route rather than a
+hardcoded one.
+
+A workspace can drop its own `providers.json` next to its `.env` to pin a
+different list — same "follows the workspace" convention as `.env` itself;
+Mai falls back to the copy shipped in this project if the workspace has
+none.
 
 The `run_command` tool needs the sandbox sidecar built once, from the sibling
 Rust repo:
@@ -83,8 +103,9 @@ terminal.
 
 ## What's here
 
-- `src/config.ts` — loads `.env`, resolves `API_PROVIDER` + the matching
-  `{GEMINI,OPENAI}_*` vars into one provider-agnostic `Config`, resolves
+- `src/config.ts` — loads `.env` and `providers.json`, resolves
+  `API_PROVIDER` against it (plus each entry's `{NAME}_MODEL`/
+  `{NAME}_BASE_URL` overrides) into one provider-agnostic `Config`, resolves
   the sandbox binary path.
 - `src/llm/types.ts` — the provider-agnostic `Content`/`Part` conversation
   model and `LlmClient` interface both clients implement.

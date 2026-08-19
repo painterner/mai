@@ -43,7 +43,7 @@ export class OpenAiClient implements LlmClient {
   ): AsyncGenerator<StreamEvent, void, unknown> {
     if (!this.opts.apiKey) {
       throw new Error(
-        'No OPENAI_API_KEY configured. Put it in a .env file (see .env.example) or export it in your shell.',
+        'No API key configured for this provider — set the env var named by its providers.json apiKeyEnv field, in a .env file (see .env.example) or exported in your shell.',
       );
     }
 
@@ -77,6 +77,33 @@ export class OpenAiClient implements LlmClient {
     }
 
     yield* parseSseStream(response.body);
+  }
+
+  /**
+   * `GET {baseUrl}/models` — the Chat Completions-side counterpart of
+   * Gemini's model-discovery route, same shape across real OpenAI and the
+   * self-hosted servers that mimic it (vLLM, Ollama, LM Studio, ...).
+   * There's no reliable "supports chat" flag in the response the way
+   * Gemini has `supportedGenerationMethods`, so every id returned is kept.
+   */
+  async listModels(): Promise<string[]> {
+    if (!this.opts.apiKey) {
+      throw new Error(
+        'No API key configured for this provider — set the env var named by its providers.json apiKeyEnv field, in a .env file (see .env.example) or exported in your shell.',
+      );
+    }
+
+    const response = await fetch(`${this.opts.baseUrl}/models`, {
+      headers: { authorization: `Bearer ${this.opts.apiKey}` },
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(
+        `OpenAI-compatible API error (HTTP ${response.status} ${response.statusText}): ${truncate(text, 500)}`,
+      );
+    }
+    const body = (await response.json()) as { data?: Array<{ id: string }> };
+    return (body.data ?? []).map((m) => m.id).sort((a, b) => a.localeCompare(b));
   }
 }
 

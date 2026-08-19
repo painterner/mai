@@ -1,0 +1,16 @@
+[
+  {
+    "name": "gemini",
+    "kind": "gemini",
+    "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+    "apiKeyEnv": "GEMINI_API_KEY",
+    "model": "gemini-2.5-flash"
+  },
+  {
+    "name": "openai",
+    "kind": "openai",
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKeyEnv": "OPENAI_API_KEY",
+    "model": "gpt-4o-mini"
+  }
+]

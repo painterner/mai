@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import readline from 'node:readline';
-import { loadConfig } from './config.js';
+import { loadConfig, configForProvider, type Config } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
 import { ToolRegistry } from './agent/tools.js';
 import { runAgentTurn, buildSystemInstruction, type AgentEvent, type ApprovalRequest } from './agent/loop.js';
@@ -25,7 +25,10 @@ type InCommand =
   | { type: 'approve'; approved: boolean }
   | { type: 'clear' }
   | { type: 'interrupt' }
-  | { type: 'handoff'; uiMessages: Message[] };
+  | { type: 'handoff'; uiMessages: Message[] }
+  | { type: 'listProviders' }
+  | { type: 'listModels'; provider: string }
+  | { type: 'setModel'; provider: string; model: string };
 
 type OutEvent =
   | {
@@ -41,6 +44,10 @@ type OutEvent =
   | { type: 'fatal'; message: string }
   | { type: 'handoffWritten' }
   | { type: 'handoffFailed'; message: string }
+  | { type: 'providersListed'; providers: string[]; current: string }
+  | { type: 'modelsListed'; models: string[]; current: string }
+  | { type: 'modelsError'; message: string }
+  | { type: 'modelChanged'; provider: string; model: string; baseUrl: string }
   | AgentEvent;
 
 function emit(event: OutEvent) {
@@ -48,6 +55,7 @@ function emit(event: OutEvent) {
 }
 
 let client: LlmClient;
+let config: Config;
 let tools: ToolRegistry;
 let systemInstruction = '';
 let conversation: Content[] = [];
@@ -92,7 +100,7 @@ async function runTurn(userText: string) {
 }
 
 async function init() {
-  const config = loadConfig();
+  config = loadConfig();
   client = createLlmClient(config);
   tools = await ToolRegistry.create(
     config.workspace,
@@ -152,6 +160,51 @@ async function init() {
           .then(() => emit({ type: 'handoffWritten' }))
           .catch((err) => emit({ type: 'handoffFailed', message: (err as Error).message }));
         break;
+      case 'listProviders':
+        emit({ type: 'providersListed', providers: config.providers.map((p) => p.name), current: config.provider });
+        break;
+      case 'listModels': {
+        if (busy) {
+          emit({ type: 'modelsError', message: 'Finish or interrupt the current turn first, then try again.' });
+          break;
+        }
+        const def = config.providers.find((p) => p.name === cmd.provider);
+        if (!def) {
+          emit({ type: 'modelsError', message: `Unknown provider "${cmd.provider}".` });
+          break;
+        }
+        const candidate = configForProvider(config, def);
+        if (!candidate.apiKey) {
+          emit({ type: 'modelsError', message: `No API key configured for "${def.name}" — set ${def.apiKeyEnv}.` });
+          break;
+        }
+        // Re-picking the already-active provider should highlight the
+        // model actually in use (which may differ from providers.json's
+        // default if it was switched at runtime); picking a *different*
+        // provider has no "last used model" to fall back on, so highlight
+        // its declared default instead.
+        const current = config.provider === def.name ? config.model : candidate.model;
+        createLlmClient(candidate)
+          .listModels()
+          .then((models) => emit({ type: 'modelsListed', models, current }))
+          .catch((err) => emit({ type: 'modelsError', message: (err as Error).message }));
+        break;
+      }
+      case 'setModel': {
+        if (busy) {
+          emit({ type: 'modelsError', message: 'Finish or interrupt the current turn first, then try again.' });
+          break;
+        }
+        const def = config.providers.find((p) => p.name === cmd.provider);
+        if (!def) {
+          emit({ type: 'modelsError', message: `Unknown provider "${cmd.provider}".` });
+          break;
+        }
+        config = { ...configForProvider(config, def), model: cmd.model };
+        client = createLlmClient(config);
+        emit({ type: 'modelChanged', provider: config.provider, model: config.model, baseUrl: config.baseUrl });
+        break;
+      }
     }
   });
   rl.on('close', () => process.exit(0));

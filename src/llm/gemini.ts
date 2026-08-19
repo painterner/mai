@@ -30,7 +30,7 @@ export class GeminiClient implements LlmClient {
   ): AsyncGenerator<StreamEvent, void, unknown> {
     if (!this.opts.apiKey) {
       throw new Error(
-        'No GEMINI_API_KEY configured. Put it in a .env file (see .env.example) or export it in your shell.',
+        'No API key configured for this provider — set the env var named by its providers.json apiKeyEnv field, in a .env file (see .env.example) or exported in your shell.',
       );
     }
 
@@ -64,6 +64,49 @@ export class GeminiClient implements LlmClient {
 
     yield* parseSseStream(response.body);
   }
+
+  /**
+   * `GET {baseUrl}/models` (paginated via `pageToken`/`nextPageToken`).
+   * Keeps only models whose `supportedGenerationMethods` includes
+   * `generateContent` — the ones `streamTurn` above can actually drive —
+   * and strips the API's `models/` name prefix down to the bare id this
+   * client's `model` option expects.
+   */
+  async listModels(): Promise<string[]> {
+    if (!this.opts.apiKey) {
+      throw new Error(
+        'No API key configured for this provider — set the env var named by its providers.json apiKeyEnv field, in a .env file (see .env.example) or exported in your shell.',
+      );
+    }
+
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const url =
+        `${this.opts.baseUrl}/models?pageSize=1000&key=${encodeURIComponent(this.opts.apiKey)}` +
+        (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
+      const response = await fetch(url);
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(
+          `Gemini API error (HTTP ${response.status} ${response.statusText}): ${truncate(text, 500)}`,
+        );
+      }
+      const page = (await response.json()) as GeminiModelsPage;
+      for (const model of page.models ?? []) {
+        if (!model.supportedGenerationMethods?.includes('generateContent')) continue;
+        ids.push(model.name.replace(/^models\//, ''));
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+
+    return ids.sort((a, b) => a.localeCompare(b));
+  }
+}
+
+interface GeminiModelsPage {
+  models?: Array<{ name: string; supportedGenerationMethods?: string[] }>;
+  nextPageToken?: string;
 }
 
 async function* parseSseStream(

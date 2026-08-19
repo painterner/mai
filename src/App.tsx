@@ -6,8 +6,9 @@ import { ConversationView } from './components/ConversationView.js';
 import { InputPrompt } from './components/InputPrompt.js';
 import { StatusBar } from './components/StatusBar.js';
 import { ApprovalPrompt } from './components/ApprovalPrompt.js';
+import { ModelPicker } from './components/ModelPicker.js';
 import { SLASH_COMMANDS } from './commands.js';
-import { loadConfig, resolveGuiBinary, type Config } from './config.js';
+import { loadConfig, resolveGuiBinary, configForProvider, type Config, type ProviderDef } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
 import { ToolRegistry } from './agent/tools.js';
 import { runAgentTurn, buildSystemInstruction, type AgentEvent, type ApprovalRequest } from './agent/loop.js';
@@ -36,12 +37,17 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [exitArmed, setExitArmed] = useState(false);
   const [approvalRequest, setApprovalRequest] = useState<ApprovalRequest | null>(null);
+  const [pickerStage, setPickerStage] = useState<'provider' | 'model' | null>(null);
+  const [pickerOptions, setPickerOptions] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
 
   const pendingRef = useRef<Message[]>([]);
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const approvalResolveRef = useRef<((approved: boolean) => void) | null>(null);
   const cancelledRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const pendingProviderRef = useRef<ProviderDef | null>(null);
+  const pendingDefaultModelRef = useRef('');
 
   const configRef = useRef<Config | null>(null);
   const clientRef = useRef<LlmClient | null>(null);
@@ -75,10 +81,10 @@ export default function App() {
 
         setReady(true);
         if (!config.apiKey) {
-          const envVar = config.provider === 'openai' ? 'OPENAI_API_KEY' : 'GEMINI_API_KEY';
+          const envVar = config.providers.find((p) => p.name === config.provider)?.apiKeyEnv ?? 'its API key';
           pushSystem(
-            `No ${envVar} found. Add it to a .env file (see .env.example) or export it in your ` +
-              'shell — local commands like /help still work without it.',
+            `No ${envVar} found for provider "${config.provider}". Add it to a .env file (see ` +
+              '.env.example) or export it in your shell — local commands like /help still work without it.',
           );
         }
       } catch (err) {
@@ -163,23 +169,15 @@ export default function App() {
         setHistory([]);
         conversationRef.current = [];
         break;
-      case '/model': {
-        const config = configRef.current;
-        pushSystem(
-          config
-            ? `provider: ${config.provider}\nmodel: ${config.model}\nbase url: ${config.baseUrl}\n` +
-                `api key: ${config.apiKey ? 'configured' : `MISSING — set ${config.provider === 'openai' ? 'OPENAI_API_KEY' : 'GEMINI_API_KEY'}`}\n` +
-                `sandbox: ${config.sandboxBinary ?? '(not found)'}`
-            : 'Still starting up — try again in a moment.',
-        );
+      case '/model':
+        openModelPicker();
         break;
-      }
       case '/theme':
         pushSystem("Theme switching isn't implemented yet — this build ships one dark theme.");
         break;
       case '/about':
         pushSystem(
-          `Mai — an Ink/React terminal UI backed by Gemini or an OpenAI-compatible API ` +
+          `Mai — an Ink/React terminal UI backed by any provider listed in providers.json ` +
             `(currently: ${configRef.current?.provider ?? 'unknown'}), with a Rust sidecar ` +
             '(mai-sandbox, from mail-cli-rust) for sandboxed shell execution.',
         );
@@ -235,6 +233,83 @@ export default function App() {
     });
     child.unref();
     exit();
+  }
+
+  // /model is a two-stage picker: pick a provider from providers.json, then
+  // (once that provider's model list has loaded) pick a model within it.
+  // A single-provider setup skips straight to the model stage.
+  function openModelPicker() {
+    const config = configRef.current;
+    if (!config) {
+      pushSystem('Still starting up — try again in a moment.');
+      return;
+    }
+    if (busy) {
+      pushError('Finish or interrupt the current turn first (Esc), then try /model again.');
+      return;
+    }
+    if (config.providers.length === 1) {
+      void selectProvider(config.providers[0].name);
+      return;
+    }
+    setPickerOptions(config.providers.map((p) => p.name));
+    setPickerStage('provider');
+  }
+
+  async function selectProvider(name: string) {
+    setPickerStage(null);
+    const config = configRef.current;
+    const def = config?.providers.find((p) => p.name === name);
+    if (!config || !def) return;
+
+    const candidate = configForProvider(config, def);
+    if (!candidate.apiKey) {
+      pushError(`No API key configured for "${def.name}" — set ${def.apiKeyEnv} first.`);
+      return;
+    }
+
+    setModelsLoading(true);
+    pushSystem(`Fetching available ${def.name} models…`);
+    try {
+      const models = await createLlmClient(candidate).listModels();
+      if (!models.length) {
+        pushError(`"${def.name}" returned no usable models.`);
+        return;
+      }
+      pendingProviderRef.current = def;
+      // Re-picking the already-active provider should highlight the model
+      // actually in use (which may differ from providers.json's default if
+      // it was switched at runtime); picking a *different* provider has no
+      // "last used model" to fall back on, so highlight its declared
+      // default instead.
+      pendingDefaultModelRef.current = config.provider === def.name ? config.model : candidate.model;
+      setPickerOptions(models);
+      setPickerStage('model');
+    } catch (err) {
+      pushError(`Failed to list models: ${(err as Error).message}`);
+    } finally {
+      setModelsLoading(false);
+    }
+  }
+
+  function selectModel(model: string) {
+    setPickerStage(null);
+    const config = configRef.current;
+    const def = pendingProviderRef.current;
+    pendingProviderRef.current = null;
+    if (!config || !def) return;
+
+    const next = configForProvider(config, def);
+    next.model = model;
+    configRef.current = next;
+    clientRef.current = createLlmClient(next);
+    pushSystem(`Switched model: provider=${next.provider} model=${model} base url=${next.baseUrl}`);
+  }
+
+  function cancelPicker() {
+    setPickerStage(null);
+    pendingProviderRef.current = null;
+    pendingDefaultModelRef.current = '';
   }
 
   async function runTurn(userText: string) {
@@ -322,10 +397,12 @@ export default function App() {
   }
 
   const turnCount = history.filter((m) => m.role === 'user').length;
-  const disabled = busy || !ready;
+  const disabled = busy || !ready || modelsLoading;
   const disabledLabel = !ready
     ? 'Starting up…'
-    : 'Mai is responding… (Esc to interrupt)';
+    : modelsLoading
+      ? 'Fetching models…'
+      : 'Mai is responding… (Esc to interrupt)';
 
   return (
     <Box flexDirection="column">
@@ -334,6 +411,21 @@ export default function App() {
       <Box marginTop={1} flexDirection="column">
         {approvalRequest ? (
           <ApprovalPrompt request={approvalRequest} onAnswer={answerApproval} />
+        ) : pickerStage === 'provider' ? (
+          <ModelPicker
+            label="Select a provider"
+            models={pickerOptions}
+            current={configRef.current?.provider ?? ''}
+            onSelect={(name) => void selectProvider(name)}
+            onCancel={cancelPicker}
+          />
+        ) : pickerStage === 'model' ? (
+          <ModelPicker
+            models={pickerOptions}
+            current={pendingDefaultModelRef.current}
+            onSelect={selectModel}
+            onCancel={cancelPicker}
+          />
         ) : (
           <InputPrompt
             history={inputHistory}
