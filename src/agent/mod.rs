@@ -1,7 +1,7 @@
 mod approval;
 mod protocol;
 mod runner;
-mod sandbox;
+pub mod sandbox;
 mod tools;
 
 pub use approval::{ApprovalRequirement, RiskLevel, RuleDecision};
