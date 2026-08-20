@@ -48,29 +48,53 @@ export function Markdown({ content, color }: { content: string; color?: string }
 
 type Block = { type: 'text' | 'code'; text: string; lang?: string };
 
+/** A whole line that is nothing but a fence, e.g. "```" or "```ts". */
+const FENCE = /^\s*```(\w*)\s*$/;
+
+/**
+ * Walks the content line by line, toggling in/out of a fenced block. An
+ * earlier version split on the fence regex and relied on the resulting
+ * array alternating text/code, which quietly mis-parsed the *closing*
+ * fence of a block as the opening fence of the next one — so any prose
+ * after a code block was rendered as code.
+ *
+ * A block left open at the end of the content stays a code block on
+ * purpose: while a reply is streaming in, the closing fence simply hasn't
+ * arrived yet.
+ */
 function splitCodeBlocks(content: string): Block[] {
-  const parts = content.split(/```(\w*)\n?/);
-  // parts alternates: text, lang, code, lang, code, ... but the regex
-  // captures lang as its own group, so structure is:
-  // [text0, lang1, code1, text1?, lang2, code2, ...] — walk it manually.
   const blocks: Block[] = [];
-  let i = 0;
+  let buffer: string[] = [];
   let inCode = false;
-  let pendingLang = '';
-  for (const part of parts) {
-    if (!inCode) {
-      if (i % 2 === 0) {
-        if (part) blocks.push({ type: 'text', text: part.replace(/\n$/, '') });
-      } else {
-        pendingLang = part;
-        inCode = true;
-      }
+  let lang = '';
+
+  const flush = () => {
+    if (inCode) {
+      if (buffer.length) blocks.push({ type: 'code', text: buffer.join('\n'), lang });
     } else {
-      blocks.push({ type: 'code', text: part.replace(/\n$/, ''), lang: pendingLang });
-      inCode = false;
+      const text = buffer.join('\n').replace(/^\n+|\n+$/g, '');
+      if (text) blocks.push({ type: 'text', text });
     }
-    i++;
+    buffer = [];
+  };
+
+  for (const line of content.split('\n')) {
+    const fence = FENCE.exec(line);
+    if (!fence) {
+      buffer.push(line);
+      continue;
+    }
+    flush();
+    if (inCode) {
+      inCode = false;
+      lang = '';
+    } else {
+      inCode = true;
+      lang = fence[1] ?? '';
+    }
   }
+  flush();
+
   return blocks.length ? blocks : [{ type: 'text', text: content }];
 }
 

@@ -9,7 +9,6 @@ interface Props {
   /** Placeholder shown while disabled; defaults to a "responding" message. */
   disabledLabel?: string;
   onSubmit: (value: string) => void;
-  onCtrlC: () => void;
   onInterrupt?: () => void;
 }
 
@@ -18,7 +17,7 @@ interface Props {
  * full control over cursor movement, kill/word shortcuts, history browsing,
  * and the slash-command dropdown all sharing the same key stream.
  */
-export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onCtrlC, onInterrupt }: Props) {
+export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onInterrupt }: Props) {
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
@@ -30,10 +29,9 @@ export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onCtrl
   const clampedMenuIndex = Math.min(menuIndex, Math.max(suggestions.length - 1, 0));
 
   useInput((input, key) => {
-    if (key.ctrl && input === 'c') {
-      onCtrlC();
-      return;
-    }
+    // Ctrl+C is App's — it has to keep working while this row is swapped
+    // out for the approval prompt or the model picker.
+    if (key.ctrl && input === 'c') return;
 
     if (disabled) {
       if (key.escape) onInterrupt?.();
@@ -121,14 +119,25 @@ export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onCtrl
     if (!input) return;
 
     // A fast burst of keystrokes — or a terminal paste — can arrive as one
-    // multi-character chunk that still has a trailing Enter embedded in it
-    // (Ink only recognizes `key.return` when '\r' arrives completely alone).
-    // Treat an embedded newline as "insert the text before it, then submit"
-    // instead of literally inserting a raw \r into the value.
-    const newlineIndex = input.search(/\r|\n/);
-    if (newlineIndex !== -1) {
-      const before = input.slice(0, newlineIndex);
-      submit(value.slice(0, cursor) + before + value.slice(cursor));
+    // multi-character chunk with newlines embedded in it (Ink only
+    // recognizes `key.return` when '\r' arrives completely alone). This is
+    // a single-line field, so flatten the breaks to spaces rather than
+    // inserting a raw \r; an earlier version submitted at the first break
+    // and silently dropped everything after it, so pasting a three-line
+    // snippet sent one line and lost two.
+    if (/[\r\n]/.test(input)) {
+      const flattened = input
+        .split(/\r\n|\r|\n/)
+        .filter((part) => part.length)
+        .join(' ');
+      const next = value.slice(0, cursor) + flattened + value.slice(cursor);
+      // Only a chunk that *ends* in a newline is the user pressing Enter.
+      if (/[\r\n]$/.test(input)) {
+        submit(next);
+      } else {
+        setValue(next);
+        setCursor(cursor + flattened.length);
+      }
       return;
     }
 

@@ -4,6 +4,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/help', description: 'Show available commands' },
   { name: '/clear', description: 'Clear the conversation and start a fresh model context' },
   { name: '/model', description: 'Discover and switch provider/model (↑/↓ to pick, Enter to confirm)' },
+  { name: '/tools', description: 'List the tools currently available to the model' },
   {
     name: '/skills',
     description: 'List skills, or /skills <name> [args] to force-run one (works for manual-only skills too)',

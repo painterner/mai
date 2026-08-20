@@ -59,23 +59,43 @@ function ToolCallBlock({ message }: { message: Message }) {
         {tool.args ? <Text color={theme.dim}>  ({tool.args})</Text> : null}
         <Text color={status.color}>  [{status.label}]</Text>
       </Text>
-      {tool.output ? (
-        <Box
-          borderStyle="round"
-          borderColor={theme.border}
-          paddingX={1}
-          flexDirection="column"
-          marginTop={0}
-        >
-          {tool.output.split('\n').map((line, i) => (
-            <Text key={i} color={theme.dim}>
-              {line.length ? line : ' '}
-            </Text>
-          ))}
-        </Box>
+      {tool.output ? <ToolOutput output={tool.output} /> : null}
+    </Box>
+  );
+}
+
+// The model always receives a tool's full output; these caps are purely
+// about what gets painted. `read_file` on a large file or a chatty
+// `run_command` can be tens of thousands of characters, and a single one
+// of those turns into thousands of wrapped terminal rows — enough to blow
+// past the scrollback and, while a turn is still live, to push Ink into
+// repainting the whole screen every frame.
+const MAX_OUTPUT_LINES = 20;
+const MAX_OUTPUT_LINE_CHARS = 300;
+
+function ToolOutput({ output }: { output: string }) {
+  const lines = output.split('\n');
+  const shown = lines.slice(0, MAX_OUTPUT_LINES);
+  const hidden = lines.length - shown.length;
+
+  return (
+    <Box borderStyle="round" borderColor={theme.border} paddingX={1} flexDirection="column" marginTop={0}>
+      {shown.map((line, i) => (
+        <Text key={i} color={theme.dim}>
+          {clip(line) || ' '}
+        </Text>
+      ))}
+      {hidden > 0 ? (
+        <Text color={theme.dim} dimColor>
+          … {hidden} more line{hidden === 1 ? '' : 's'}
+        </Text>
       ) : null}
     </Box>
   );
+}
+
+function clip(line: string): string {
+  return line.length > MAX_OUTPUT_LINE_CHARS ? `${line.slice(0, MAX_OUTPUT_LINE_CHARS)}…` : line;
 }
 
 function formatTime(ts: number): string {

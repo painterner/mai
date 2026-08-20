@@ -62,6 +62,18 @@ let conversation: Content[] = [];
 let pendingApprovalResolve: ((approved: boolean) => void) | null = null;
 let currentAbort: AbortController | null = null;
 let busy = false;
+// Bumped whenever the frontend clears the conversation. A turn that was
+// already in flight captures the epoch it started under and only writes
+// its result back if it still matches — otherwise finishing a turn that
+// was cleared mid-flight would resurrect the whole history it was built
+// from.
+let conversationEpoch = 0;
+
+function settlePendingApproval(approved: boolean) {
+  const resolve = pendingApprovalResolve;
+  pendingApprovalResolve = null;
+  resolve?.(approved);
+}
 
 function requestApproval(request: ApprovalRequest): Promise<boolean> {
   // `request` isn't needed here — the reducer on the frontend side already
@@ -76,6 +88,7 @@ function requestApproval(request: ApprovalRequest): Promise<boolean> {
 
 async function runTurn(userText: string) {
   busy = true;
+  const epoch = conversationEpoch;
   const controller = new AbortController();
   currentAbort = controller;
 
@@ -90,13 +103,14 @@ async function runTurn(userText: string) {
       emit(step.value);
       step = await generator.next();
     }
-    conversation = step.value ?? conversation;
+    if (epoch === conversationEpoch) conversation = step.value ?? conversation;
   } catch (err) {
     emit({ type: 'error', message: (err as Error).message });
   }
 
   busy = false;
   currentAbort = null;
+  settlePendingApproval(false);
 }
 
 async function init() {
@@ -141,14 +155,19 @@ async function init() {
         if (!busy) void runTurn(cmd.text);
         break;
       case 'approve':
-        pendingApprovalResolve?.(cmd.approved);
-        pendingApprovalResolve = null;
+        settlePendingApproval(cmd.approved);
         break;
       case 'clear':
         conversation = [];
+        conversationEpoch += 1;
         break;
       case 'interrupt':
         currentAbort?.abort();
+        // A turn parked on an approval prompt isn't waiting on the network,
+        // so aborting the request alone does nothing for it: the turn (and
+        // `busy` with it) would stay stuck forever and every later `send`
+        // would be silently dropped. Decline the pending call instead.
+        settlePendingApproval(false);
         break;
       case 'handoff':
         writeHandoff({

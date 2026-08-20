@@ -1,7 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { spawn } from 'node:child_process';
-import { Box, useApp } from 'ink';
-import { Header } from './components/Header.js';
+import { Box, useApp, useInput, useStdout } from 'ink';
 import { ConversationView } from './components/ConversationView.js';
 import { InputPrompt } from './components/InputPrompt.js';
 import { StatusBar } from './components/StatusBar.js';
@@ -14,11 +13,19 @@ import { ToolRegistry } from './agent/tools.js';
 import { runAgentTurn, buildSystemInstruction, type AgentEvent, type ApprovalRequest } from './agent/loop.js';
 import { applyAgentEvent, closeStreaming, createTurnState } from './agent/reducer.js';
 import { readAndClearHandoff, writeHandoff } from './handoff.js';
+import { useTerminalSize } from './hooks/useTerminalSize.js';
 import type { Message } from './types.js';
 import { genId } from './utils.js';
 
+// Erase screen + scrollback, then home the cursor. Same sequence
+// `ansi-escapes`' clearTerminal emits on POSIX; inlined so this doesn't
+// depend on a transitive dependency of Ink's.
+const CLEAR_TERMINAL = '\u001B[2J\u001B[3J\u001B[H';
+
 export default function App() {
   const { exit } = useApp();
+  const { stdout } = useStdout();
+  const { columns, rows } = useTerminalSize();
 
   const [history, setHistory] = useState<Message[]>(() => [
     {
@@ -40,6 +47,7 @@ export default function App() {
   const [pickerStage, setPickerStage] = useState<'provider' | 'model' | null>(null);
   const [pickerOptions, setPickerOptions] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [redrawKey, setRedrawKey] = useState(0);
 
   const pendingRef = useRef<Message[]>([]);
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -104,6 +112,40 @@ export default function App() {
     [],
   );
 
+  /**
+   * Wipe the screen and repaint everything, transcript included.
+   *
+   * Ink paints `<Static>` content once, straight into the scrollback, and
+   * only ever erases the *live* region below it — and it erases it by
+   * counting the newlines in the frame it last wrote, not the screen rows
+   * that frame actually occupies. Both assumptions break the moment the
+   * terminal is resized (zooming in/out is a resize): the transcript was
+   * laid out for the old width, and the emulator has since reflowed the
+   * live region into a different number of rows than Ink is about to erase,
+   * so the next frame lands on top of leftovers from the last one. There's
+   * no incremental repair for that — the only reliable fix is to start
+   * over, so clear the screen and remount `<Static>` (via `redrawKey`) so
+   * it re-emits the whole transcript at the new width.
+   */
+  const redraw = useCallback(() => {
+    stdout?.write(CLEAR_TERMINAL);
+    setRedrawKey((k) => k + 1);
+  }, [stdout]);
+
+  const laidOutFor = useRef<string | null>(null);
+  useEffect(() => {
+    const size = `${columns}x${rows}`;
+    // Skip the very first run: nothing has been painted yet, and clearing
+    // the screen on startup would eat whatever the user had on it.
+    if (laidOutFor.current === null) {
+      laidOutFor.current = size;
+      return;
+    }
+    if (laidOutFor.current === size) return;
+    laidOutFor.current = size;
+    redraw();
+  }, [columns, rows, redraw]);
+
   function updatePending(next: Message[]) {
     pendingRef.current = next;
     setPending(next);
@@ -145,6 +187,13 @@ export default function App() {
     exitTimerRef.current = setTimeout(() => setExitArmed(false), 2000);
   }
 
+  // Ctrl+C lives here rather than in InputPrompt because the input row is
+  // swapped out entirely while an approval or the model picker is up —
+  // handling it there meant those two states had no way to quit at all.
+  useInput((input, key) => {
+    if (key.ctrl && input === 'c') handleCtrlC();
+  });
+
   function handleSubmit(raw: string) {
     const value = raw.trim();
     if (!value) return;
@@ -169,10 +218,33 @@ export default function App() {
       case '/clear':
         setHistory([]);
         conversationRef.current = [];
+        // The transcript already lives in the terminal's scrollback, where
+        // React can't reach it — dropping `history` alone leaves every past
+        // turn on screen. Wipe it for real.
+        redraw();
         break;
       case '/model':
         openModelPicker();
         break;
+      case '/tools': {
+        const tools = toolsRef.current;
+        if (!tools) {
+          pushSystem('Still starting up — try again in a moment.');
+          break;
+        }
+        // classifyTool() always allows these outright; run_command's actual
+        // risk depends on the command itself and is only known per-call.
+        const RISK_NOTE: Record<string, string> = {
+          run_command: 'risk depends on the command — some need your approval first',
+        };
+        pushSystem(
+          tools
+            .definitions()
+            .map((d) => `${d.name} (${RISK_NOTE[d.name] ?? 'auto-approved'}) — ${d.description}`)
+            .join('\n'),
+        );
+        break;
+      }
       case '/skills': {
         const skills = toolsRef.current?.skillList;
         if (!skills) {
@@ -389,6 +461,20 @@ export default function App() {
     let turn = createTurnState();
     const applyAndRender = (event: AgentEvent) => {
       turn = applyAgentEvent(turn, event);
+      // Hand every message at the head of the turn that can no longer
+      // change (a bubble that stopped streaming, a tool call that already
+      // reported) straight to <Static> rather than waiting for the turn to
+      // end. Otherwise the live region Ink redraws on *every* frame grows
+      // for the whole turn, and the moment it's taller than the terminal
+      // Ink switches to clearing the screen and reprinting the entire
+      // transcript each frame — which is what makes a long reply flicker
+      // and tear.
+      const settled = countSettled(turn.messages);
+      if (settled > 0) {
+        const done = turn.messages.slice(0, settled);
+        turn = { ...turn, messages: turn.messages.slice(settled) };
+        pushHistory(...done);
+      }
       updatePending(turn.messages);
     };
 
@@ -467,8 +553,13 @@ export default function App() {
 
   return (
     <Box flexDirection="column">
-      <Header cwd={process.cwd()} />
-      <ConversationView history={history} pending={pending} />
+      <ConversationView
+        cwd={process.cwd()}
+        history={history}
+        pending={pending}
+        redrawKey={redrawKey}
+        width={columns}
+      />
       <Box marginTop={1} flexDirection="column">
         {approvalRequest ? (
           <ApprovalPrompt request={approvalRequest} onAnswer={answerApproval} />
@@ -493,7 +584,6 @@ export default function App() {
             disabled={disabled}
             disabledLabel={disabledLabel}
             onSubmit={handleSubmit}
-            onCtrlC={handleCtrlC}
             onInterrupt={handleInterrupt}
           />
         )}
@@ -506,4 +596,21 @@ export default function App() {
       </Box>
     </Box>
   );
+}
+
+/**
+ * How many messages at the head of an in-flight turn are final: a bubble
+ * that has stopped streaming, or a tool call that has already reported its
+ * result. Stops at the first message that could still change, so moving
+ * that prefix into the finished transcript never reorders anything.
+ */
+function countSettled(messages: Message[]): number {
+  let count = 0;
+  for (const message of messages) {
+    if (message.streaming) break;
+    const status = message.tool?.status;
+    if (status === 'running' || status === 'pending_approval') break;
+    count += 1;
+  }
+  return count;
 }

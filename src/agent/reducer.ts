@@ -32,6 +32,12 @@ export function applyAgentEvent(state: TurnState, event: AgentEvent): TurnState 
         const id = genId();
         return {
           ...state,
+          // A model that interleaves reasoning with prose (thought, text,
+          // thought, text) starts a *new* bubble each time it switches.
+          // Leaving assistantId set here would make the next 'text' event
+          // append to the assistant bubble sitting above this thought
+          // instead, so the reply would render out of order.
+          assistantId: null,
           thoughtId: id,
           messages: closeStreaming(state.messages).concat([
             { id, role: 'thought', content: event.text, streaming: true, timestamp: Date.now() },
@@ -51,6 +57,8 @@ export function applyAgentEvent(state: TurnState, event: AgentEvent): TurnState 
         return {
           ...state,
           assistantId: id,
+          // Mirror of the 'thought' case above — see the note there.
+          thoughtId: null,
           messages: closeStreaming(state.messages).concat([
             { id, role: 'assistant', content: event.text, streaming: true, timestamp: Date.now() },
           ]),

@@ -112,6 +112,15 @@ export class OpenAiClient implements LlmClient {
 interface OpenAiMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | null;
+  /**
+   * Some "thinking mode" reasoning models (DeepSeek-R1-style, several
+   * proxies) require the reasoning they streamed on a previous turn to be
+   * echoed back verbatim on this field when that assistant message is
+   * replayed in a later request — omit it and they 400 with "reasoning_content
+   * ... must be passed back to the API" the moment a tool call triggers a
+   * follow-up completion.
+   */
+  reasoning_content?: string;
   tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
   tool_call_id?: string;
 }
@@ -125,19 +134,32 @@ function toOpenAiMessages(systemInstruction: string, contents: Content[]): OpenA
   // anywhere, which sidesteps needing to carry a provider-specific id
   // through the canonical Content/FunctionCall shape at all.
   let lastToolCallIds: string[] = [];
+  // Some "thinking mode" providers (see the reasoning_content doc comment
+  // above) treat reasoning as a *session-level* switch, not a per-turn one:
+  // once any turn has streamed reasoning, they require every later
+  // assistant message to carry the field — even ones that themselves had
+  // no reasoning text — and 400 on a message that omits it outright rather
+  // than tolerating a missing field the way most JSON APIs would.
+  let thinkingModeActive = false;
 
   for (const entry of contents) {
-    const textParts = entry.parts.filter(isTextPart);
+    const allTextParts = entry.parts.filter(isTextPart);
+    const textParts = allTextParts.filter((p) => !p.thought);
+    const thoughtParts = allTextParts.filter((p) => p.thought);
     const functionCalls = entry.parts.filter(isFunctionCallPart);
     const functionResponses = entry.parts.filter(isFunctionResponsePart);
 
     if (entry.role === 'model') {
       const text = textParts.map((p) => p.text).join('');
+      const reasoning = thoughtParts.map((p) => p.text).join('');
+      if (reasoning) thinkingModeActive = true;
+      const reasoningField = thinkingModeActive ? { reasoning_content: reasoning } : {};
       if (functionCalls.length) {
         const ids = functionCalls.map((_, i) => `call_${messages.length}_${i}`);
         messages.push({
           role: 'assistant',
           content: text || null,
+          ...reasoningField,
           tool_calls: functionCalls.map((p, i) => ({
             id: ids[i],
             type: 'function',
@@ -146,7 +168,7 @@ function toOpenAiMessages(systemInstruction: string, contents: Content[]): OpenA
         });
         lastToolCallIds = ids;
       } else {
-        messages.push({ role: 'assistant', content: text });
+        messages.push({ role: 'assistant', content: text, ...reasoningField });
         lastToolCallIds = [];
       }
     } else if (functionResponses.length) {
