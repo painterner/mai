@@ -1,7 +1,7 @@
 //! Standalone sandboxed-command-execution helper.
 //!
 //! Exists so a non-Rust front end (currently the Ink/Node CLI in
-//! `gemini-cli-node`) can reuse `maicli`'s bubblewrap + seccomp sandbox
+//! `mai-cli-node`) can reuse `maicli`'s bubblewrap + seccomp sandbox
 //! without linking against Rust at all: it just spawns this binary as a
 //! subprocess, writes one JSON request to stdin, and reads one JSON
 //! response from stdout.
