@@ -62,6 +62,31 @@ npm run dev     # tsx, no build step
 npm run build && npm start
 ```
 
+## HTTP API
+
+Mai also has a stateless HTTP API backed by the same provider clients,
+agent loop, skills, workspace tools, approval rules, and Rust sandbox as the
+CLI and GUI:
+
+```bash
+npm run api:dev               # development
+# or
+npm run build && npm run api  # compiled
+```
+
+It listens on `127.0.0.1:3141` by default and exposes `POST /v1/chat`
+(regular JSON or streaming NDJSON), `GET /v1/providers`, `GET /v1/models`,
+and `GET /health`. API file writes, shell execution, and automatic approval
+of review-gated commands are disabled by default. See
+[`docs/api.md`](docs/api.md) for request/response formats, authentication,
+configuration, streaming events, conversation history, and security notes.
+
+For distribution, Mai ships as a Tauri desktop host (tray + autostart +
+packaged sidecars) and as a full-featured Docker service. The Docker profile
+keeps workspace writes and the bubblewrap/seccomp shell enabled. See
+[`docs/deployment.md`](docs/deployment.md) for Compose, local installers,
+cross-platform release CI, signing, and the platform support matrix.
+
 ## How a turn works
 
 1. Your message + conversation history go to the active provider's
@@ -147,6 +172,8 @@ terminal.
   the GUI's frontend so both render turns identically.
 - `src/daemon.ts` + `src/handoff.ts` — the headless JSON-stdio agent daemon
   the GUI spawns, and the `/gui`⇄"Open in CLI" session handoff file format.
+- `src/api.ts` — the stateless HTTP API server; it exposes chat, provider,
+  model-discovery, and health endpoints while reusing the same agent code.
 - `src/App.tsx` — wires all of the above into the UI: streaming
   text/thought bubbles, live tool-call cards, an `ApprovalPrompt` that
   replaces the input box while a risky call waits on you, Esc to abort a
