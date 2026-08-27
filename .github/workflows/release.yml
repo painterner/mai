@@ -1,0 +1,112 @@
+name: release-desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            tauri_args: ""
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            tauri_args: ""
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            tauri_args: "--target aarch64-apple-darwin"
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            tauri_args: "--target x86_64-apple-darwin"
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out GUI
+        uses: actions/checkout@v7
+        with:
+          path: workspace/mai-cli-gui
+
+      - name: Check out Node agent
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.MAI_NODE_REPOSITORY }}
+          token: ${{ secrets.MAI_SOURCE_TOKEN || github.token }}
+          path: workspace/mai-cli-node
+
+      - name: Check out Rust sandbox
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.MAI_RUST_REPOSITORY }}
+          token: ${{ secrets.MAI_SOURCE_TOKEN || github.token }}
+          path: workspace/mail-cli-rust
+
+      - name: Install Linux desktop dependencies
+        if: startsWith(matrix.runner, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            workspace/mai-cli-node/package-lock.json
+            workspace/mai-cli-gui/package-lock.json
+
+      - name: Set up Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            workspace/mail-cli-rust -> target
+            workspace/mai-cli-gui/src-tauri -> target
+
+      - name: Install Node dependencies
+        run: npm ci
+        working-directory: workspace/mai-cli-node
+
+      - name: Install GUI dependencies
+        run: npm ci
+        working-directory: workspace/mai-cli-gui
+
+      - name: Build sandbox sidecar
+        run: cargo build --release --locked --bin mai-sandbox --target ${{ matrix.target }}
+        working-directory: workspace/mail-cli-rust
+
+      - name: Build Node sidecars
+        run: npm run package:sidecars -- --target-triple ${{ matrix.target }}
+        working-directory: workspace/mai-cli-node
+
+      - name: Build installers and attach release assets
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: workspace/mai-cli-gui
+          tagName: mai-v__VERSION__
+          releaseName: "Mai v__VERSION__"
+          releaseBody: "Cross-platform Mai Desktop test build."
+          releaseDraft: true
+          prerelease: true
+          args: ${{ matrix.tauri_args }}
