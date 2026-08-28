@@ -127,6 +127,8 @@ Shell 后端，也应明确显示当前执行节点，不能把两种模式混�
 - 托盘左键或 **Show Mai** 恢复窗口，**Quit Mai** 才会退出。
 - GUI 中的 **Start at login** 开关通过 Tauri autostart 注册启动项。
 - 后台同时运行 stdio daemon 和 `mai-api`；API 异常退出后两秒自动重启。
+- Session、Run、事件和终端 scrollback 写入 workspace 的 `.mai/api.sqlite`；API 重启后
+  可继续查询已完成记录和按序号回放事件。
 - `API running` 状态会显示在 GUI 顶栏。
 - 安装包构建配置包含 `mai-daemon`、`mai-api`、`mai-cli`、`mai-sandbox`，目标机器不需要
   安装 Node.js；当前 `mai-sandbox` 完整 Shell 后端仅在 Linux 生效。
@@ -210,6 +212,12 @@ MAI_ALLOW_SHELL=true
 review 的命令，并使用镜像内的 Node/npm、Rust/Cargo、Git 和 ripgrep 工具链。
 永久 forbidden 的命令仍会被规则引擎拒绝。
 
+API 是持久 Agent Gateway，不只是 `/v1/chat`：容器可以管理 Session/Run、SSE 事件、
+skills/tools、直接文件读取以及交互式 sandbox PTY。数据库默认位于
+`/workspace/.mai/api.sqlite`，因此与文件修改一起通过 bind mount 持久化。Compose 默认
+`MAI_API_APPROVE_RISKY=true` 以适合无人值守测试；要由远程客户端逐项审批，改为 `false`
+并调用 `/v1/runs/{id}/approval`。
+
 Shell 内部仍使用 bubblewrap namespaces、只读容器根目录、仅 `/workspace` 和 `/tmp`
 可写、Mai seccomp BPF 过滤器以及无网络命令环境。
 
@@ -237,28 +245,34 @@ docker compose --env-file .env.docker ps
 docker compose --env-file .env.docker logs -f mai-api
 ```
 
-健康检查和 API 请求：
+健康检查和持久 Run 请求：
 
 ```bash
 curl http://127.0.0.1:3141/health
 
-curl -X POST http://127.0.0.1:3141/v1/chat \
+SESSION_ID=$(curl -s -X POST http://127.0.0.1:3141/v1/sessions \
   -H "Authorization: Bearer $MAI_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"message":"检查项目并运行测试","stream":false}'
+  -d '{}' | jq -r .id)
+
+curl -X POST "http://127.0.0.1:3141/v1/sessions/$SESSION_ID/runs" \
+  -H "Authorization: Bearer $MAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"检查项目并运行测试"}'
 ```
 
 停止：`docker compose --env-file .env.docker down`。
 
-### 为什么 Compose 增加 `SYS_ADMIN`
+### Docker 权限为什么这样设置
 
-Docker 默认 seccomp/AppArmor 会阻止 bubblewrap 创建嵌套 namespace。Compose 因此添加
-`SYS_ADMIN` capability，并对该容器关闭 Docker 外层 seccomp/AppArmor；容器本身不是
-`privileged`，不挂载 Docker socket 或宿主设备，实际命令仍进入 Mai 的内层
-bubblewrap + seccomp sandbox。
+Docker 默认 seccomp/AppArmor 会阻止 bubblewrap 创建嵌套 user/PID/network namespace，
+所以 Compose 只对 Mai 容器关闭这两层 Docker 策略。Mai 进程仍以 uid 1000 运行，容器
+没有 `SYS_ADMIN` capability，也不是 `privileged`，不挂载 Docker socket 或宿主设备；
+实际命令仍进入 Mai 的内层 bubblewrap + seccomp sandbox。
 
-这是保留 Shell sandbox 功能所需的明确权衡。不要增加 Docker socket、宿主根目录或其他
-敏感挂载。
+部分内核不允许在容器中再次挂载 procfs。镜像设置
+`MAI_SANDBOX_PROC_MODE=bind`，让内层 sandbox 只读复用已经受 Docker 边界限制的
+`/proc`，不因此提升容器权限。不要增加 Docker socket、宿主根目录或其他敏感挂载。
 
 ### 网络暴露
 

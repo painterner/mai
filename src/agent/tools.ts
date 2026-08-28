@@ -161,7 +161,7 @@ export class ToolRegistry {
     return classifyTool(tool, args);
   }
 
-  async execute(tool: string, args: unknown): Promise<string> {
+  async execute(tool: string, args: unknown, signal?: AbortSignal): Promise<string> {
     const record = (args ?? {}) as Record<string, unknown>;
     switch (tool) {
       case 'list_files':
@@ -182,7 +182,7 @@ export class ToolRegistry {
         return this.replaceInFile(str(record.path), str(record.old), str(record.new));
       case 'run_command':
         if (!this.permissions.shell) throw new Error('Shell execution is disabled');
-        return this.runCommand(str(record.command), num(record.timeout_seconds));
+        return this.runCommand(str(record.command), num(record.timeout_seconds), signal);
       case 'load_skill':
         return this.loadSkill(str(record.name));
       default:
@@ -283,7 +283,7 @@ export class ToolRegistry {
     return `Updated ${input}`;
   }
 
-  private async runCommand(command: string, timeoutSeconds?: number): Promise<string> {
+  private async runCommand(command: string, timeoutSeconds?: number, signal?: AbortSignal): Promise<string> {
     if (!this.sandboxBinary) {
       throw new Error(
         'No sandbox binary configured. Build mail-cli-rust with ' +
@@ -291,7 +291,7 @@ export class ToolRegistry {
       );
     }
     const timeout = Math.min(300, Math.max(1, timeoutSeconds ?? 120));
-    const result = await runSandboxed(this.sandboxBinary, this.workspace, command, timeout);
+    const result = await runSandboxed(this.sandboxBinary, this.workspace, command, timeout, signal);
     if (!result.ok) throw new Error(result.error);
     const summary = `exit status: ${result.exitCode ?? 'unknown'}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
     return truncate(summary, MAX_OUTPUT_CHARS);

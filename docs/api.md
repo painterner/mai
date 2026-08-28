@@ -1,249 +1,283 @@
-# Mai HTTP API
+# Mai Agent Gateway API
 
-Mai HTTP API 把 CLI 和 GUI 使用的同一套 agent loop、provider、skills、文件工具及
-Rust sandbox 通过 HTTP 暴露出来。API 是无状态的：服务端不会保存会话，请求方在后续
-调用中传回上一次响应的 `history`，因此多个客户端可以安全并发使用，不会共享上下文。
+Mai API 暴露的不是普通模型聊天，而是 CLI/GUI 使用的同一套 agent runtime：模型、系统
+提示、skills、文件工具、Shell 工具和 `mai-sandbox`。新客户端应使用持久化
+Session/Run API；旧 `/v1/chat` 继续兼容。
 
 ## 启动
 
-开发模式：
-
-```bash
-npm run api:dev
-```
-
-构建后启动：
-
 ```bash
 npm run build
-npm run api
+npm link
+
+MAI_API_ALLOW_WRITE=true \
+MAI_API_ALLOW_SHELL=true \
+MAI_API_KEY=long-random-token \
+mai-api
 ```
 
-默认地址是 `http://127.0.0.1:3141`。如果通过 npm 全局安装，也可以运行
-`mai-api`。服务使用启动进程的当前目录作为 agent workspace。
+默认监听 `http://127.0.0.1:3141`，workspace 是启动 `mai-api` 时的当前目录。除
+`/health` 外，设置 `MAI_API_KEY` 后所有 `/v1/*` 请求都需要：
 
-至少需要为当前 provider 配置对应的模型 API Key。例如：
-
-```bash
-API_PROVIDER=openai OPENAI_API_KEY=... npm run api:dev
+```http
+Authorization: Bearer long-random-token
 ```
-
-## 服务配置
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `MAI_API_HOST` | `127.0.0.1` | HTTP 监听地址 |
-| `MAI_API_PORT` | `3141` | HTTP 监听端口；`0` 表示由系统分配 |
-| `MAI_API_KEY` | 空 | `/v1/*` 的 Bearer Token；监听非本机地址时必填 |
-| `MAI_API_ALLOW_WRITE` | `false` | 是否向模型提供 `write_file`/`replace_in_file` |
-| `MAI_API_ALLOW_SHELL` | `false` | 是否向模型提供 `run_command`；同时受 `MAI_ALLOW_SHELL` 控制 |
-| `MAI_API_APPROVE_RISKY` | `false` | 是否自动批准规则引擎标为 review 的调用 |
+| `MAI_API_HOST` | `127.0.0.1` | 监听地址；非 loopback 时必须设置 API Key |
+| `MAI_API_PORT` | `3141` | 监听端口，`0` 表示随机端口 |
+| `MAI_API_KEY` | 空 | `/v1/*` Bearer Token |
+| `MAI_API_STATE` | `<workspace>/.mai/api.sqlite` | Session、Run、事件和终端 scrollback SQLite 文件 |
+| `MAI_API_ALLOW_WRITE` | `false` | 开放 agent 和文件 API 写入 |
+| `MAI_API_ALLOW_SHELL` | `false` | 开放 `run_command` 和交互终端 |
+| `MAI_API_APPROVE_RISKY` | `false` | `true` 自动批准 review；`false` 等待审批接口 |
+| `MAI_ALLOW_SHELL` | `true` | CLI/API 共用的 Shell 总开关 |
 
-布尔变量接受 `0`、`false`、`no`、`off` 表示关闭，其他值表示开启。
+SQLite 保存会话历史、运行状态和全部事件。文件内容直接保存在 workspace；Docker 模式
+通过 `/workspace` bind mount 写回宿主目录。
 
-安全规则：
+## 推荐调用流程
 
-- 默认仅监听 loopback，默认只允许读取 workspace。
-- 监听 `0.0.0.0`、局域网 IP 等非 loopback 地址时，未设置 `MAI_API_KEY` 会拒绝启动。
-- 即使 `MAI_API_APPROVE_RISKY=true`，规则引擎判定为 `forbidden` 的命令仍不会执行。
-- 文件工具仍有 workspace 边界和符号链接逃逸检查；Shell 仍通过 `mai-sandbox` 执行。
+```text
+POST /v1/sessions
+        ↓ session_id
+POST /v1/sessions/{session_id}/runs
+        ↓ run_id（立即返回 202）
+GET  /v1/runs/{run_id}/events
+        ↓ SSE：模型文本、工具、审批、完成事件
+POST /v1/runs/{run_id}/approval   （需要时）
+POST /v1/runs/{run_id}/steer      （需要时）
+POST /v1/runs/{run_id}/stop       （需要时）
+```
 
-设置 `MAI_API_KEY` 后，请求头必须包含：
+### 1. 创建会话
+
+```bash
+curl -X POST http://127.0.0.1:3141/v1/sessions \
+  -H "Authorization: Bearer $MAI_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"检查工程","provider":"openai","model":"gpt-5.6-sol"}'
+```
+
+返回：
+
+```json
+{
+  "id": "sess_...",
+  "title": "检查工程",
+  "provider": "openai",
+  "model": "gpt-5.6-sol",
+  "history": [],
+  "createdAt": "2026-08-27T...Z",
+  "updatedAt": "2026-08-27T...Z"
+}
+```
+
+### 2. 创建后台 Run
+
+```bash
+curl -X POST http://127.0.0.1:3141/v1/sessions/$SESSION_ID/runs \
+  -H "Authorization: Bearer $MAI_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"检查项目、修改问题并运行测试"}'
+```
+
+服务器立即返回 `202`。同一个 Session 同时只允许一个活动 Run；不同 Session 可以并发。
+
+### 3. 订阅事件
+
+```bash
+curl -N http://127.0.0.1:3141/v1/runs/$RUN_ID/events \
+  -H "Authorization: Bearer $MAI_API_KEY"
+```
+
+事件使用标准 SSE：
+
+```text
+id: 1
+event: run.started
+data: {"sessionId":"sess_...","provider":"openai","model":"gpt-5.6-sol","seq":1}
+
+id: 2
+event: agent.toolStart
+data: {"id":"tc1","name":"read_file","args":{"path":"README.md"},"seq":2}
+
+id: 3
+event: agent.toolFinished
+data: {"id":"tc1","name":"read_file","output":"...","status":"done","seq":3}
+
+id: 4
+event: run.completed
+data: {"message":"完成……","seq":4}
+```
+
+事件先写 SQLite 再发送。断线后使用下面任意一种方式续传：
 
 ```http
-Authorization: Bearer your-secret
+Last-Event-ID: 3
 ```
 
-`GET /health` 不要求认证，且不返回任何模型或服务 API Key。
+或：
 
-## `GET /health`
+```text
+GET /v1/runs/{id}/events?after=3
+```
 
-检查服务状态和当前权限。
+### 4. 审批、steer 和停止
+
+`MAI_API_APPROVE_RISKY=false` 时，review 级工具会令 Run 进入
+`waiting_approval`，并产生 `run.waiting_approval` 事件：
 
 ```bash
-curl http://127.0.0.1:3141/health
-```
-
-示例响应：
-
-```json
-{
-  "status": "ok",
-  "service": "mai-api",
-  "workspace": "/workspace/project",
-  "provider": "openai",
-  "model": "gpt-4.1",
-  "permissions": {
-    "write": false,
-    "shell": false,
-    "approveRisky": false
-  }
-}
-```
-
-## `GET /v1/providers`
-
-列出 `providers.json` 中的 provider。`configured` 只表示对应环境变量中是否存在
-API Key，不会返回 Key 本身。
-
-```bash
-curl -H 'Authorization: Bearer your-secret' \
-  http://127.0.0.1:3141/v1/providers
-```
-
-示例响应：
-
-```json
-{
-  "current": "openai",
-  "providers": [
-    {
-      "name": "openai",
-      "kind": "openai",
-      "baseUrl": "https://api.openai.com/v1",
-      "defaultModel": "gpt-4.1",
-      "configured": true
-    }
-  ]
-}
-```
-
-## `GET /v1/models`
-
-从 provider 的模型发现接口实时读取模型列表。省略 `provider` 时使用当前 provider。
-
-```bash
-curl -H 'Authorization: Bearer your-secret' \
-  'http://127.0.0.1:3141/v1/models?provider=openai'
-```
-
-响应：
-
-```json
-{
-  "provider": "openai",
-  "current": "gpt-4.1",
-  "models": ["gpt-4.1", "gpt-4.1-mini"]
-}
-```
-
-## `POST /v1/chat`
-
-执行一个完整 agent turn。模型可以在同一次调用中多轮调用工具，直到输出最终回复或达到
-agent 的最大步骤数。
-
-### 请求体
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `message` | string | 是 | 用户消息，不能为空，最大 100,000 字符 |
-| `history` | `Content[]` | 否 | 上一次响应返回的历史；默认 `[]`，最多 200 项 |
-| `provider` | string | 否 | `providers.json` 中的 provider 名称；不区分大小写 |
-| `model` | string | 否 | 覆盖本次请求使用的模型，不修改 CLI 已保存的选择 |
-| `stream` | boolean | 否 | `true` 返回 NDJSON 事件流；默认 `false` |
-
-### 普通 JSON 调用
-
-```bash
-curl -X POST http://127.0.0.1:3141/v1/chat \
+curl -X POST http://127.0.0.1:3141/v1/runs/$RUN_ID/approval \
+  -H "Authorization: Bearer $MAI_API_KEY" \
   -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer your-secret' \
-  -d '{
-    "message": "概括一下这个项目的结构",
-    "stream": false
-  }'
+  -d '{"approved":true}'
 ```
 
-成功响应：
-
-```json
-{
-  "id": "chat_2b4e4c8d-...",
-  "provider": "openai",
-  "model": "gpt-4.1",
-  "message": "这个项目……",
-  "events": [
-    {"type": "toolStart", "id": "tc1", "name": "list_files", "args": {"path": "."}},
-    {"type": "toolFinished", "id": "tc1", "name": "list_files", "output": "...", "status": "done"},
-    {"type": "text", "text": "这个项目……"},
-    {"type": "done"}
-  ],
-  "history": [
-    {"role": "user", "parts": [{"text": "概括一下这个项目的结构"}]},
-    {"role": "model", "parts": [{"text": "这个项目……"}]}
-  ]
-}
-```
-
-`message` 只拼接最终回复的 `text` 事件；思考内容和工具过程保留在 `events` 中。
-
-### 延续对话
-
-把前一次响应中的 `history` 原样放入下一次请求：
-
-```json
-{
-  "message": "再详细说明 src/agent",
-  "history": [
-    {"role": "user", "parts": [{"text": "概括一下这个项目的结构"}]},
-    {"role": "model", "parts": [{"text": "这个项目……"}]}
-  ]
-}
-```
-
-`history` 使用 Mai 的 provider-neutral `Content` 格式。`parts` 支持三种结构：
-
-```json
-{"text": "文本", "thought": false}
-{"functionCall": {"name": "read_file", "args": {"path": "README.md"}}}
-{"functionResponse": {"name": "read_file", "response": {"result": "..."}}}
-```
-
-通常不需要自行组装工具历史，直接保存和回传服务响应即可。
-
-### NDJSON 流式调用
+在下一个工具边界追加指导：
 
 ```bash
-curl -N -X POST http://127.0.0.1:3141/v1/chat \
+curl -X POST http://127.0.0.1:3141/v1/runs/$RUN_ID/steer \
+  -H "Authorization: Bearer $MAI_API_KEY" \
   -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer your-secret' \
-  -d '{"message":"读取 README 并用一句话概括","stream":true}'
+  -d '{"message":"不要改配置文件，先补测试"}'
 ```
 
-响应的 `Content-Type` 是 `application/x-ndjson`，每行都是一个完整 JSON 对象：
+停止模型请求、等待中的审批或正在运行的 sandbox 命令：
 
-```jsonl
-{"type":"toolStart","id":"tc1","name":"read_file","args":{"path":"README.md"}}
-{"type":"toolFinished","id":"tc1","name":"read_file","output":"...","status":"done"}
-{"type":"text","text":"Mai 是……"}
-{"type":"done"}
-{"type":"result","id":"chat_...","provider":"openai","model":"gpt-4.1","message":"Mai 是……","history":[...]}
+```bash
+curl -X POST http://127.0.0.1:3141/v1/runs/$RUN_ID/stop \
+  -H "Authorization: Bearer $MAI_API_KEY"
 ```
 
-最后一行固定为 `type: "result"`，包含下一次调用需要的 `history`。流式结果不重复返回
-`events`，因为所有事件已经逐行发送。
+## Session 与 Run 接口
 
-### Agent 事件
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/v1/sessions` | 分页列出会话，支持 `limit`/`offset` |
+| `POST` | `/v1/sessions` | 创建会话 |
+| `GET` | `/v1/sessions/{id}` | 会话元数据和完整 provider-neutral history |
+| `PATCH` | `/v1/sessions/{id}` | 修改 title/provider/model |
+| `DELETE` | `/v1/sessions/{id}` | 删除会话、Run 和事件 |
+| `GET` | `/v1/sessions/{id}/messages` | 获取最新持久化模型/工具历史 |
+| `GET` | `/v1/sessions/{id}/runs` | 列出会话的 Run |
+| `POST` | `/v1/sessions/{id}/runs` | 创建异步 Run |
+| `GET` | `/v1/runs/{id}` | 查询状态、回复或错误 |
+| `GET` | `/v1/runs/{id}/events` | 可恢复 SSE 事件流 |
+| `POST` | `/v1/runs/{id}/approval` | 批准或拒绝待审工具 |
+| `POST` | `/v1/runs/{id}/steer` | 排队中途指导 |
+| `POST` | `/v1/runs/{id}/stop` | 中止 Run |
 
-| `type` | 用途 |
-| --- | --- |
-| `text` | 最终回复的文本增量 |
-| `thought` | provider 返回的推理文本增量 |
-| `toolStart` | 工具开始运行 |
-| `toolApprovalNeeded` | 工具需要批准；API 根据服务端配置自动同意或拒绝 |
-| `toolFinished` | 工具完成、失败或被拒绝 |
-| `done` | agent turn 正常完成 |
-| `error` | provider 或 agent 执行错误 |
+Run 状态：`queued`、`running`、`waiting_approval`、`completed`、`failed`、
+`cancelled`。API 异常重启时，未完成 Run 会在 SQLite 中标记为 `failed`，已完成会话和事件
+不丢失。
+
+## Skills、Tools 与文件
+
+```text
+GET /v1/capabilities
+GET /v1/providers
+GET /v1/models?provider=openai
+GET /v1/tools
+GET /v1/skills
+GET /v1/skills/{name}
+```
+
+`/v1/tools` 返回当前权限下实际向模型提供的 function declarations。Skills 在每个 Run
+开始时重新扫描，因此新增或修改 workspace skill 不需要重启 API。
+
+列目录和读取文件：
+
+```bash
+curl 'http://127.0.0.1:3141/v1/files?path=src' \
+  -H "Authorization: Bearer $MAI_API_KEY"
+
+curl 'http://127.0.0.1:3141/v1/files/content?path=src/api.ts' \
+  -H "Authorization: Bearer $MAI_API_KEY"
+```
+
+写入 UTF-8 或 base64 文件：
+
+```bash
+curl -X PUT http://127.0.0.1:3141/v1/files \
+  -H "Authorization: Bearer $MAI_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"generated/result.txt","encoding":"utf8","content":"done\n"}'
+```
+
+所有路径必须是 workspace 相对路径，真实路径和符号链接不能逃出 workspace。直接文件接口
+单文件限制为 10 MiB。
+
+## 交互式 Sandbox Terminal
+
+交互终端不是宿主 Shell。`mai-api` 启动同一个 `mai-sandbox --terminal`，在 Linux
+bubblewrap/seccomp、无网络、workspace-only 写入边界内分配 PTY。
+
+创建终端：
+
+```bash
+curl -X POST http://127.0.0.1:3141/v1/terminals \
+  -H "Authorization: Bearer $MAI_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"exec bash -i","cols":120,"rows":40}'
+```
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/v1/terminals` | 创建 sandbox PTY |
+| `GET` | `/v1/terminals/{id}` | 查询终端状态和 exit code |
+| `GET` | `/v1/terminals/{id}/events` | 可恢复 SSE 输出/退出事件 |
+| `POST` | `/v1/terminals/{id}/input` | 写 stdin，支持 `utf8`/`base64` |
+| `POST` | `/v1/terminals/{id}/resize` | 修改 rows/cols |
+| `POST` | `/v1/terminals/{id}/signal` | `INT`、`TERM`、`KILL` |
+| `DELETE` | `/v1/terminals/{id}` | 关闭终端 |
+
+输入：
+
+```json
+{"data":"npm test\n","encoding":"utf8"}
+```
+
+终端输出是任意字节，所以 `terminal.output` 事件使用 base64：
+
+```text
+event: terminal.output
+data: {"data":"bm9kZSAtdg0K","encoding":"base64","seq":2}
+```
+
+终端 metadata 和输出事件保存在 SQLite，断线后可以回放；活动进程本身不能跨 API 进程
+重启恢复，重启后会标记为 `failed`。
+
+## 兼容 `/v1/chat`
+
+`POST /v1/chat` 仍执行完整 agent turn，支持原 JSON 和 NDJSON 格式：
+
+```json
+{
+  "message": "读取 README 并运行测试",
+  "history": [],
+  "provider": "openai",
+  "model": "gpt-5.6-sol",
+  "stream": true
+}
+```
+
+该接口仍由调用方回传 `history`，也不能在断线后恢复审批或进度。新集成应使用
+Session/Run API。
 
 ## HTTP 状态码
 
 | 状态码 | 说明 |
 | --- | --- |
-| `200` | 请求成功；流式请求开始后发生的错误通过 `error` 事件表示 |
-| `400` | JSON、参数、provider、history 或 provider API Key 配置错误 |
-| `401` | Bearer Token 缺失或不正确 |
-| `404` | 路径不存在 |
-| `413` | 请求体超过 2 MiB |
-| `500` | API 内部错误 |
-| `502` | 非流式调用中，底层模型/provider 返回错误 |
+| `200/201/202/204` | 成功、创建、后台 Run 已接受、删除成功 |
+| `400` | JSON、参数、provider 或路径错误 |
+| `401` | Bearer Token 错误 |
+| `403` | 写入或 Shell 功能未开启 |
+| `404` | Session、Run、Terminal、Skill 或文件不存在 |
+| `409` | Session 已有活动 Run，或目标不在可操作状态 |
+| `413` | 请求体或直接文件超过限制 |
+| `501` | 当前平台没有交互 sandbox 后端 |
+| `500` | 内部错误 |
 

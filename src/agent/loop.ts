@@ -35,6 +35,8 @@ export interface AgentLoopDeps {
   requestApproval: (request: ApprovalRequest) => Promise<boolean>;
   /** Lets the caller cancel an in-flight model request (e.g. Esc to interrupt). */
   signal?: AbortSignal;
+  /** Guidance queued by an external controller, consumed at tool boundaries. */
+  takeSteering?: () => string[];
 }
 
 let toolCallCounter = 0;
@@ -128,7 +130,7 @@ export async function* runAgentTurn(
 
       yield { type: 'toolStart', id, name: call.name, args };
       try {
-        const output = await deps.tools.execute(call.name, args);
+        const output = await deps.tools.execute(call.name, args, deps.signal);
         yield { type: 'toolFinished', id, name: call.name, output, status: 'done' };
         responseParts.push({ functionResponse: { name: call.name, response: { result: output } } });
       } catch (err) {
@@ -138,6 +140,13 @@ export async function* runAgentTurn(
       }
     }
     contents.push({ role: 'user', parts: responseParts });
+    const steering = deps.takeSteering?.() ?? [];
+    if (steering.length) {
+      contents.push({
+        role: 'user',
+        parts: [{ text: `Additional user guidance received while the run was active:\n${steering.join('\n')}` }],
+      });
+    }
   }
 
   yield { type: 'error', message: 'Reached the maximum number of tool-call steps for this turn.' };

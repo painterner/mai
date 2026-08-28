@@ -30,12 +30,10 @@ services:
       - "127.0.0.1:${MAI_API_PUBLISHED_PORT:-3141}:3141"
     volumes:
       - ${MAI_WORKSPACE:-.}:/workspace
-    # bubblewrap creates nested namespaces and installs Mai's inner seccomp
-    # filter. Docker's default seccomp/AppArmor policy blocks that setup, so
-    # only these namespace-related restrictions are relaxed; the container is
-    # not privileged and receives no host socket or device mounts.
-    cap_add:
-      - SYS_ADMIN
+    # bubblewrap still creates nested namespaces and installs Mai's inner
+    # seccomp filter. It reuses Docker's already container-scoped /proc as a
+    # read-only mount because kernels reject a second procfs mount there.
+    # Docker is not privileged and receives no host socket or device mounts.
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined

@@ -28,8 +28,13 @@ export function runSandboxed(
   workspace: string,
   command: string,
   timeoutSeconds = 120,
+  signal?: AbortSignal,
 ): Promise<SandboxResponse> {
   return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve({ ok: false, error: 'Sandbox command was interrupted' });
+      return;
+    }
     let child;
     try {
       child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -45,8 +50,14 @@ export function runSandboxed(
     const finish = (response: SandboxResponse) => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener('abort', abort);
       resolve(response);
     };
+    const abort = () => {
+      child.kill('SIGTERM');
+      finish({ ok: false, error: 'Sandbox command was interrupted' });
+    };
+    signal?.addEventListener('abort', abort, { once: true });
 
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf8');

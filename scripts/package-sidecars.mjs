@@ -26,7 +26,19 @@ function packageEntry(entry, name) {
   const output = path.join(outputDir, `${name}-${targetTriple}${extension}`);
   execFileSync(
     path.join(projectRoot, 'node_modules', '.bin', executableName('pkg')),
-    [entry, '--config', 'pkg.config.json', '--targets', pkgTarget, '--fallback-to-source', '--output', output],
+    [
+      entry,
+      '--config',
+      'pkg.config.json',
+      '--targets',
+      pkgTarget,
+      '--no-bytecode',
+      '--public',
+      '--public-packages',
+      '*',
+      '--output',
+      output,
+    ],
     { cwd: projectRoot, stdio: 'inherit' },
   );
 }

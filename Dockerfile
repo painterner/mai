@@ -35,6 +35,7 @@ COPY --from=sandbox-builder /src/mail-cli-rust/target/release/mai-sandbox /usr/l
 
 ENV NODE_ENV=production \
     MAI_SANDBOX_BIN=/usr/local/bin/mai-sandbox \
+    MAI_SANDBOX_PROC_MODE=bind \
     MAI_ALLOW_SHELL=true \
     MAI_API_HOST=0.0.0.0 \
     MAI_API_PORT=3141 \
