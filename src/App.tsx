@@ -6,7 +6,7 @@ import { InputPrompt } from './components/InputPrompt.js';
 import { StatusBar } from './components/StatusBar.js';
 import { ApprovalPrompt } from './components/ApprovalPrompt.js';
 import { ModelPicker } from './components/ModelPicker.js';
-import { SLASH_COMMANDS } from './commands.js';
+import { SLASH_COMMANDS, matchIdentifier, parseModelCommandArgs } from './commands.js';
 import { loadConfig, resolveGuiBinary, configForProvider, saveState, type Config, type ProviderDef } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
 import { ToolRegistry } from './agent/tools.js';
@@ -224,8 +224,17 @@ export default function App() {
         redraw();
         break;
       case '/model':
-        openModelPicker();
+      case '/model/': {
+        const request = parseModelCommandArgs(parts.slice(1));
+        if (request.kind === 'error') {
+          pushError(request.message);
+        } else if (request.kind === 'picker') {
+          openModelPicker();
+        } else {
+          void selectNamedModel(request.model, request.provider);
+        }
         break;
+      }
       case '/tools': {
         const tools = toolsRef.current;
         if (!tools) {
@@ -424,6 +433,61 @@ export default function App() {
     }
   }
 
+  async function selectNamedModel(modelName: string, providerName?: string) {
+    const config = configRef.current;
+    if (!config) {
+      pushSystem('Still starting up — try again in a moment.');
+      return;
+    }
+    if (busy) {
+      pushError('Finish or interrupt the current turn first (Esc), then try /model again.');
+      return;
+    }
+
+    const requestedProvider = providerName ?? config.provider;
+    const matchedProvider = matchIdentifier(
+      config.providers.map((provider) => provider.name),
+      requestedProvider,
+    );
+    const def = config.providers.find((provider) => provider.name === matchedProvider);
+    if (!def) {
+      pushError(
+        `Unknown provider "${requestedProvider}". Available providers: ` +
+          config.providers.map((provider) => provider.name).join(', '),
+      );
+      return;
+    }
+
+    const candidate = configForProvider(config, def);
+    if (!candidate.apiKey) {
+      pushError(`No API key configured for "${def.name}" — set ${def.apiKeyEnv} first.`);
+      return;
+    }
+
+    setModelsLoading(true);
+    pushSystem(`Fetching available ${def.name} models…`);
+    try {
+      const models = await createLlmClient(candidate).listModels();
+      if (!models.length) {
+        pushError(`"${def.name}" returned no usable models.`);
+        return;
+      }
+      const matchedModel = matchIdentifier(models, modelName);
+      if (!matchedModel) {
+        pushError(
+          `Model "${modelName}" was not found for provider "${def.name}". ` +
+            'Run /model to browse the available models.',
+        );
+        return;
+      }
+      activateModel(config, def, matchedModel);
+    } catch (err) {
+      pushError(`Failed to list models: ${(err as Error).message}`);
+    } finally {
+      setModelsLoading(false);
+    }
+  }
+
   function selectModel(model: string) {
     setPickerStage(null);
     const config = configRef.current;
@@ -431,6 +495,10 @@ export default function App() {
     pendingProviderRef.current = null;
     if (!config || !def) return;
 
+    activateModel(config, def, model);
+  }
+
+  function activateModel(config: Config, def: ProviderDef, model: string) {
     const next = configForProvider(config, def);
     next.model = model;
     configRef.current = next;

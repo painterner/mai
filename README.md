@@ -27,9 +27,11 @@ compatible), a `baseUrl`, a default `model`, and an `apiKeyEnv` naming which
 Ollama server). To add a provider: append an entry and set its `apiKeyEnv`
 var in `.env`. `API_PROVIDER` picks which entry is active at startup by
 `name`; `/model` in the running CLI (or the **Model** button in the GUI)
-switches provider and model at runtime without restarting — it fetches the
-live list from each provider's model-discovery route rather than a
-hardcoded one.
+opens the interactive provider/model picker. `/model <model>` directly
+selects a model from the current provider, while `/model <model> <provider>`
+selects both, for example `/model gpt-5.6-sol openai`. Switching never needs
+a restart: Mai validates names against the provider's live model-discovery
+route and persists the selection in the workspace.
 
 A workspace can drop its own `providers.json` next to its `.env` to pin a
 different list — same "follows the workspace" convention as `.env` itself;
