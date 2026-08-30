@@ -62,8 +62,16 @@ async function scanSkillsDir(dir: string, source: Skill['source']): Promise<Skil
 
   const skills: Skill[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
     const skillDir = path.join(dir, entry.name);
+    if (!entry.isDirectory()) {
+      if (!entry.isSymbolicLink()) continue;
+      // `Dirent.isDirectory()` is false for a symlink even when its target
+      // is a directory. Follow it deliberately so a shared skill library
+      // can be linked into ~/.agents/skills, but quietly ignore broken
+      // links and links to ordinary files.
+      const target = await fs.stat(skillDir).catch(() => null);
+      if (!target?.isDirectory()) continue;
+    }
     const skillFile = path.join(skillDir, 'SKILL.md');
     let raw: string;
     try {

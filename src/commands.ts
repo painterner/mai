@@ -10,7 +10,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/tools', description: 'List the tools currently available to the model' },
   {
     name: '/skills',
-    description: 'List skills, or /skills <name> [args] to force-run one (works for manual-only skills too)',
+    description: 'List skills; invoke with /<name> [args] or /skills <name> [args]',
   },
   { name: '/system', description: 'Show the current system prompt sent to the model' },
   { name: '/theme', description: 'Toggle a cosmetic theme note (placeholder)' },
@@ -20,9 +20,49 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/quit', description: 'Exit the CLI' },
 ];
 
-export function matchCommands(input: string): SlashCommand[] {
+export interface SkillCommandDescriptor {
+  name: string;
+  description: string;
+}
+
+/**
+ * Completes both direct skill aliases (`/astro-setup`) and the explicit
+ * form (`/skills astro-setup`). Built-in commands own their names when a
+ * skill collides; the colliding skill remains available through `/skills`.
+ */
+export function matchCommands(
+  input: string,
+  skills: SkillCommandDescriptor[] = [],
+): SlashCommand[] {
+  const skillArgument = input.match(/^\/skills\s+([^\s]*)$/i);
+  if (skillArgument) {
+    const q = skillArgument[1].toLowerCase();
+    return skills
+      .filter((skill) => isSlashSafeSkillName(skill.name) && skill.name.toLowerCase().startsWith(q))
+      .map((skill) => ({
+        name: `/skills ${skill.name}`,
+        description: `Skill — ${skill.description}`,
+      }));
+  }
+
+  // Once an argument has started, regular commands and direct skill aliases
+  // are already complete; don't keep an unrelated menu open over free text.
+  if (/\s/.test(input)) return [];
+
   const q = input.toLowerCase();
-  return SLASH_COMMANDS.filter((c) => c.name.startsWith(q));
+  const builtIns = SLASH_COMMANDS.filter((command) => command.name.startsWith(q));
+  const reserved = new Set(SLASH_COMMANDS.map((command) => command.name.toLowerCase()));
+  const skillAliases = skills
+    .filter((skill) => {
+      const alias = `/${skill.name}`.toLowerCase();
+      return isSlashSafeSkillName(skill.name) && !reserved.has(alias) && alias.startsWith(q);
+    })
+    .map((skill) => ({ name: `/${skill.name}`, description: `Skill — ${skill.description}` }));
+  return [...builtIns, ...skillAliases];
+}
+
+function isSlashSafeSkillName(name: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(name);
 }
 
 export type ModelCommandRequest =

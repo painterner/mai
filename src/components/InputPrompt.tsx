@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { theme } from '../theme.js';
-import { matchCommands } from '../commands.js';
+import { matchCommands, type SkillCommandDescriptor } from '../commands.js';
 import {
   insertAtCursor,
   isShiftEnterInput,
@@ -11,6 +11,7 @@ import {
 
 interface Props {
   history: string[];
+  skills?: SkillCommandDescriptor[];
   disabled?: boolean;
   /** The model is working, but input remains enabled so submissions can queue. */
   busy?: boolean;
@@ -28,6 +29,7 @@ interface Props {
  */
 export function InputPrompt({
   history,
+  skills = [],
   disabled,
   busy,
   queuedCount = 0,
@@ -41,7 +43,11 @@ export function InputPrompt({
   const [draft, setDraft] = useState('');
   const [menuIndex, setMenuIndex] = useState(0);
 
-  const suggestions = value.startsWith('/') && value.length > 0 ? matchCommands(value) : [];
+  // Keep the live region bounded when `/` matches a large personal skill
+  // library. Typing another character narrows the list immediately.
+  const suggestions = value.startsWith('/') && value.length > 0
+    ? matchCommands(value, skills).slice(0, 12)
+    : [];
   const menuVisible = suggestions.length > 0;
   const clampedMenuIndex = Math.min(menuIndex, Math.max(suggestions.length - 1, 0));
 
@@ -98,6 +104,10 @@ export function InputPrompt({
     }
 
     if (key.return) {
+      if (menuVisible && value.trimEnd().toLowerCase() !== suggestions[clampedMenuIndex].name.toLowerCase()) {
+        setValueAndCursor(suggestions[clampedMenuIndex].name + ' ');
+        return;
+      }
       submit(value);
       return;
     }

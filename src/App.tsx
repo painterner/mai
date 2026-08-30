@@ -9,7 +9,7 @@ import { ModelPicker } from './components/ModelPicker.js';
 import { SLASH_COMMANDS, matchIdentifier, parseModelCommandArgs } from './commands.js';
 import { loadConfig, resolveGuiBinary, configForProvider, saveState, type Config, type ProviderDef } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
-import { ToolRegistry } from './agent/tools.js';
+import { ToolRegistry, type Skill } from './agent/tools.js';
 import { runAgentTurn, buildSystemInstruction, type AgentEvent, type ApprovalRequest } from './agent/loop.js';
 import { applyAgentEvent, closeStreaming, createTurnState } from './agent/reducer.js';
 import { readAndClearHandoff, writeHandoff } from './handoff.js';
@@ -304,31 +304,14 @@ export default function App() {
         // load_skill tool call, this works for manual-only skills too (that's
         // the whole point of the flag — gated behind an explicit trigger,
         // which this is) since it never goes through ToolRegistry.execute.
-        const skill = skills.find((s) => s.name === name);
+        const matchedName = matchIdentifier(skills.map((skill) => skill.name), name);
+        const skill = skills.find((entry) => entry.name === matchedName);
         if (!skill) {
           pushError(`No skill named "${name}" — try /skills to see what's available.`);
           break;
         }
-        if (busy) {
-          pushError('Finish or interrupt the current turn first (Esc), then try /skills again.');
-          break;
-        }
         const extra = parts.slice(2).join(' ').trim();
-        // Some skills gate themselves on "only when the user explicitly
-        // invokes /foo" — a slash command from whatever tool the skill was
-        // authored for (Claude Code, Codex, ...), which mai doesn't have.
-        // Spell out plainly that /skills <name> *is* that explicit
-        // invocation, so the model doesn't second-guess the precondition
-        // just because it doesn't see that exact command name.
-        const invocationNote =
-          `The user just explicitly invoked this skill manually via "/skills ${skill.name}" in this ` +
-          'CLI — treat that as satisfying any "only when the user explicitly invokes ..." precondition ' +
-          "below, even if the exact command name mentioned there differs (mai doesn't have per-skill " +
-          'slash commands).';
-        const turnText = extra
-          ? `${invocationNote}\n\n${skill.body}\n\n---\n\nUser-supplied argument for this skill: ${extra}`
-          : `${invocationNote}\n\n${skill.body}`;
-        inputQueueRef.current!.enqueue({ displayText: raw.trim(), userText: turnText });
+        queueSkillInvocation(skill, raw, extra);
         break;
       }
       case '/system':
@@ -351,9 +334,33 @@ export default function App() {
       case '/quit':
         exit();
         break;
-      default:
-        pushError(`Unknown command: ${cmd} — try /help.`);
+      default: {
+        const skills = toolsRef.current?.skillList ?? [];
+        const requestedName = parts[0].slice(1);
+        const matchedName = matchIdentifier(skills.map((skill) => skill.name), requestedName);
+        const skill = skills.find((entry) => entry.name === matchedName);
+        if (!skill) {
+          pushError(`Unknown command: ${cmd} — try /help or /skills.`);
+          break;
+        }
+        queueSkillInvocation(skill, raw, parts.slice(1).join(' ').trim());
+      }
     }
+  }
+
+  function queueSkillInvocation(skill: Skill, raw: string, extra: string) {
+    // This explicit user action may invoke manual-only skills too. Tell the
+    // model that either supported spelling (`/name` or `/skills name`) meets
+    // skill instructions which require a particular explicit slash trigger.
+    const invokedAs = raw.trim().split(/\s+/)[0];
+    const invocationNote =
+      `The user just explicitly invoked the "${skill.name}" skill manually via "${invokedAs}" in this ` +
+      'CLI. Treat that as satisfying any "only when the user explicitly invokes ..." precondition ' +
+      'in the skill instructions below, even if they mention a different application\'s command name.';
+    const turnText = extra
+      ? `${invocationNote}\n\n${skill.body}\n\n---\n\nUser-supplied argument for this skill: ${extra}`
+      : `${invocationNote}\n\n${skill.body}`;
+    inputQueueRef.current!.enqueue({ displayText: raw.trim(), userText: turnText });
   }
 
   async function switchToGui() {
@@ -672,6 +679,7 @@ export default function App() {
         ) : (
           <InputPrompt
             history={inputHistory}
+            skills={toolsRef.current?.skillList}
             disabled={disabled}
             busy={busy}
             queuedCount={queuedCount}

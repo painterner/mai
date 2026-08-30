@@ -127,8 +127,11 @@ Mai discovers [Agent Skills](https://code.claude.com/docs/en/skills) —
 (personal, cross-project) and `<workspace>/.agents/skills` (project-local),
 merged by name with the workspace copy winning on a collision. Nothing
 extra to install: a skill written for Claude Code or Codex works here
-unmodified, same file format. `/skills` lists what was found; a one-line
-`name: description` catalog goes into the system prompt for every skill
+unmodified, same file format. `/skills` lists what was found. A skill can be
+invoked directly as `/<name> [args]` (for example `/astro-setup my-app`) or
+with `/skills <name> [args]`; both forms are included in Tab completion and
+work for manual-only skills too. A one-line `name: description` catalog goes
+into the system prompt for every skill
 *not* marked `disable-model-invocation: true` in its frontmatter, and the
 model calls the `load_skill` tool with a skill's name to pull its full
 instructions into context on demand — skills aren't dumped into the system
