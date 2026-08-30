@@ -11,6 +11,11 @@ interface ActiveRun {
   steering: string[];
 }
 
+interface QueuedRun {
+  run: RunRecord;
+  config: Config;
+}
+
 export interface RunManagerOptions {
   store: ApiStore;
   workspace: string;
@@ -26,6 +31,7 @@ export class RunManager {
   readonly events = new EventBus();
   private readonly active = new Map<string, ActiveRun>();
   private readonly activeSession = new Map<string, string>();
+  private readonly queuedBySession = new Map<string, QueuedRun[]>();
   private shuttingDown = false;
 
   constructor(private readonly options: RunManagerOptions) {}
@@ -36,17 +42,27 @@ export class RunManager {
     provider?: string,
     model?: string,
   ): RunRecord {
-    if (this.activeSession.has(session.id)) {
-      throw new RunConflictError(`Session ${session.id} already has an active run.`);
-    }
     const config = this.options.selectConfig(provider ?? session.provider, model ?? session.model);
     if (!config.apiKey) throw new RunInputError(`No API key configured for provider "${config.provider}".`);
     const run = this.options.store.createRun(session.id, input, config.provider, config.model);
+    this.emit(run.id, 'run.queued', { sessionId: session.id });
+
+    if (this.activeSession.has(session.id)) {
+      const queue = this.queuedBySession.get(session.id) ?? [];
+      queue.push({ run, config });
+      this.queuedBySession.set(session.id, queue);
+      return run;
+    }
+
+    this.launch(run, session, config);
+    return run;
+  }
+
+  private launch(run: RunRecord, session: SessionRecord, config: Config): void {
     const active: ActiveRun = { controller: new AbortController(), approval: null, steering: [] };
     this.active.set(run.id, active);
     this.activeSession.set(session.id, run.id);
     void this.execute(run, session, config, active);
-    return run;
   }
 
   approve(runId: string, approved: boolean): RunRecord {
@@ -76,7 +92,13 @@ export class RunManager {
   stop(runId: string): RunRecord {
     const run = this.requireRun(runId);
     const active = this.active.get(runId);
-    if (!active) return run;
+    if (!active) {
+      if (run.status === 'queued' && this.removeQueued(run)) {
+        this.update(runId, 'cancelled', 'run.cancelled', {});
+        return this.requireRun(runId);
+      }
+      return run;
+    }
     active.controller.abort();
     const resolve = active.approval;
     active.approval = null;
@@ -88,6 +110,10 @@ export class RunManager {
   stopAll(): void {
     this.shuttingDown = true;
     for (const runId of [...this.active.keys()]) this.stop(runId);
+    for (const queue of this.queuedBySession.values()) {
+      for (const { run } of queue) this.update(run.id, 'cancelled', 'run.cancelled', {});
+    }
+    this.queuedBySession.clear();
   }
 
   private async execute(
@@ -167,7 +193,43 @@ export class RunManager {
     } finally {
       this.active.delete(run.id);
       this.activeSession.delete(session.id);
+      this.launchNext(session.id);
     }
+  }
+
+  private launchNext(sessionId: string): void {
+    if (this.shuttingDown) return;
+    const queue = this.queuedBySession.get(sessionId);
+    if (!queue?.length) {
+      this.queuedBySession.delete(sessionId);
+      return;
+    }
+
+    const next = queue.shift()!;
+    if (queue.length === 0) this.queuedBySession.delete(sessionId);
+    const session = this.options.store.getSession(sessionId);
+    if (!session) {
+      if (this.options.store.getRun(next.run.id)) {
+        this.options.store.updateRun(next.run.id, {
+          status: 'failed',
+          error: `Session ${sessionId} was deleted before the queued run started.`,
+        });
+        this.emit(next.run.id, 'run.failed', { error: `Session ${sessionId} no longer exists.` });
+      }
+      this.launchNext(sessionId);
+      return;
+    }
+    this.launch(next.run, session, next.config);
+  }
+
+  private removeQueued(run: RunRecord): boolean {
+    const queue = this.queuedBySession.get(run.sessionId);
+    if (!queue) return false;
+    const index = queue.findIndex((entry) => entry.run.id === run.id);
+    if (index < 0) return false;
+    queue.splice(index, 1);
+    if (queue.length === 0) this.queuedBySession.delete(run.sessionId);
+    return true;
   }
 
   private requestApproval(

@@ -12,7 +12,10 @@ import {
 interface Props {
   history: string[];
   disabled?: boolean;
-  /** Placeholder shown while disabled; defaults to a "responding" message. */
+  /** The model is working, but input remains enabled so submissions can queue. */
+  busy?: boolean;
+  queuedCount?: number;
+  /** Placeholder shown while disabled. */
   disabledLabel?: string;
   onSubmit: (value: string) => void;
   onInterrupt?: () => void;
@@ -23,7 +26,15 @@ interface Props {
  * full control over cursor movement, kill/word shortcuts, history browsing,
  * and the slash-command dropdown all sharing the same key stream.
  */
-export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onInterrupt }: Props) {
+export function InputPrompt({
+  history,
+  disabled,
+  busy,
+  queuedCount = 0,
+  disabledLabel,
+  onSubmit,
+  onInterrupt,
+}: Props) {
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
@@ -92,6 +103,7 @@ export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onInte
     }
 
     if (key.escape) {
+      if (busy) onInterrupt?.();
       setValueAndCursor('');
       setHistoryIndex(null);
       return;
@@ -196,8 +208,10 @@ export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onInte
             <Text inverse> </Text>
             <Text color={theme.dim}>
               {disabled
-                ? (disabledLabel ?? 'Mai is responding… (Esc to interrupt)')
-                : 'Ask Mai anything, or try /help…'}
+                ? (disabledLabel ?? 'Input is temporarily unavailable…')
+                : busy
+                  ? `Mai is responding — Enter queues a message${queuedCount ? ` (${queuedCount} queued)` : ''} · Esc interrupts`
+                  : 'Ask Mai anything, or try /help…'}
             </Text>
           </>
         ) : (

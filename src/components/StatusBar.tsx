@@ -5,6 +5,7 @@ import { Spinner } from './Spinner.js';
 
 interface Props {
   busy: boolean;
+  queuedCount?: number;
   turnCount: number;
   model: string;
   exitArmed: boolean;
@@ -17,7 +18,7 @@ interface Props {
  * The left half is pinned; the right half truncates instead of wrapping,
  * from the start so the turn counter at the end survives.
  */
-export function StatusBar({ busy, turnCount, model, exitArmed }: Props) {
+export function StatusBar({ busy, queuedCount = 0, turnCount, model, exitArmed }: Props) {
   const right = exitArmed
     ? 'press Ctrl+C again to exit'
     : `${model} · ${turnCount} turn${turnCount === 1 ? '' : 's'}`;
@@ -25,7 +26,11 @@ export function StatusBar({ busy, turnCount, model, exitArmed }: Props) {
   return (
     <Box justifyContent="space-between" paddingX={1}>
       <Box flexShrink={0}>
-        {busy ? <Spinner label="thinking…" /> : <Text color={theme.dim}>ready</Text>}
+        {busy ? (
+          <Spinner label={queuedCount ? `thinking… · ${queuedCount} queued` : 'thinking…'} />
+        ) : (
+          <Text color={theme.dim}>ready</Text>
+        )}
       </Box>
       <Text color={exitArmed ? theme.error : theme.dim} wrap="truncate-start">
         {right}

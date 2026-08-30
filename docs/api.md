@@ -174,6 +174,11 @@ Run 状态：`queued`、`running`、`waiting_approval`、`completed`、`failed`�
 `cancelled`。API 异常重启时，未完成 Run 会在 SQLite 中标记为 `failed`，已完成会话和事件
 不丢失。
 
+同一个 Session 可以在模型仍在处理时继续 `POST .../runs`。新 Run 会按提交顺序保持
+`queued`，当前 Run 结束（包括失败或被中止）后逐个启动，并读取前一 Run 完成后保存的最新
+会话历史。不同 Session 的 Run 仍可并行执行。对尚未启动的 Run 调用 `/stop` 会直接将其
+标记为 `cancelled` 并从队列移除。
+
 ## Skills、Tools 与文件
 
 ```text
@@ -280,4 +285,3 @@ Session/Run API。
 | `413` | 请求体或直接文件超过限制 |
 | `501` | 当前平台没有交互 sandbox 后端 |
 | `500` | 内部错误 |
-

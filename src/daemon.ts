@@ -6,6 +6,7 @@ import { ToolRegistry } from './agent/tools.js';
 import { runAgentTurn, buildSystemInstruction, type AgentEvent, type ApprovalRequest } from './agent/loop.js';
 import { readAndClearHandoff, writeHandoff } from './handoff.js';
 import type { Message } from './types.js';
+import { SerialQueue } from './serial-queue.js';
 
 /**
  * Headless agent daemon: same agent/tools/approval/LLM code the Ink CLI
@@ -48,6 +49,8 @@ type OutEvent =
   | { type: 'modelsListed'; models: string[]; current: string }
   | { type: 'modelsError'; message: string }
   | { type: 'modelChanged'; provider: string; model: string; baseUrl: string }
+  | { type: 'queueChanged'; waiting: number }
+  | { type: 'turnStarted'; text: string }
   | AgentEvent;
 
 function emit(event: OutEvent) {
@@ -62,6 +65,14 @@ let conversation: Content[] = [];
 let pendingApprovalResolve: ((approved: boolean) => void) | null = null;
 let currentAbort: AbortController | null = null;
 let busy = false;
+const sendQueue = new SerialQueue<string>(
+  async (text) => {
+    emit({ type: 'turnStarted', text });
+    await runTurn(text);
+  },
+  ({ waiting }) => emit({ type: 'queueChanged', waiting }),
+  (error) => emit({ type: 'error', message: (error as Error).message }),
+);
 // Bumped whenever the frontend clears the conversation. A turn that was
 // already in flight captures the epoch it started under and only writes
 // its result back if it still matches — otherwise finishing a turn that
@@ -152,12 +163,15 @@ async function init() {
     }
     switch (cmd.type) {
       case 'send':
-        if (!busy) void runTurn(cmd.text);
+        if (cmd.text.trim()) sendQueue.enqueue(cmd.text.trim());
         break;
       case 'approve':
         settlePendingApproval(cmd.approved);
         break;
       case 'clear':
+        sendQueue.clearWaiting();
+        currentAbort?.abort();
+        settlePendingApproval(false);
         conversation = [];
         conversationEpoch += 1;
         break;

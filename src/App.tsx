@@ -16,11 +16,19 @@ import { readAndClearHandoff, writeHandoff } from './handoff.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
 import type { Message } from './types.js';
 import { genId } from './utils.js';
+import { SerialQueue } from './serial-queue.js';
 
 // Erase screen + scrollback, then home the cursor. Same sequence
 // `ansi-escapes`' clearTerminal emits on POSIX; inlined so this doesn't
 // depend on a transitive dependency of Ink's.
 const CLEAR_TERMINAL = '\u001B[2J\u001B[3J\u001B[H';
+
+interface QueuedTurn {
+  /** Text shown in the transcript when this turn starts. */
+  displayText: string;
+  /** Text actually sent to the model (different for manually invoked skills). */
+  userText: string;
+}
 
 export default function App() {
   const { exit } = useApp();
@@ -41,6 +49,7 @@ export default function App() {
   const [pending, setPending] = useState<Message[]>([]);
   const [inputHistory, setInputHistory] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [queuedCount, setQueuedCount] = useState(0);
   const [ready, setReady] = useState(false);
   const [exitArmed, setExitArmed] = useState(false);
   const [approvalRequest, setApprovalRequest] = useState<ApprovalRequest | null>(null);
@@ -62,6 +71,18 @@ export default function App() {
   const toolsRef = useRef<ToolRegistry | null>(null);
   const systemInstructionRef = useRef('');
   const conversationRef = useRef<Content[]>([]);
+  const queuedInputWorkerRef = useRef<(turn: QueuedTurn) => Promise<void>>(async () => {});
+  const inputQueueRef = useRef<SerialQueue<QueuedTurn> | null>(null);
+  if (!inputQueueRef.current) {
+    inputQueueRef.current = new SerialQueue(
+      (turn) => queuedInputWorkerRef.current(turn),
+      ({ running, waiting }) => {
+        setBusy(running);
+        setQueuedCount(waiting);
+      },
+      (error) => pushError(`Queued message failed: ${(error as Error).message}`),
+    );
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -204,8 +225,7 @@ export default function App() {
       return;
     }
 
-    pushHistory({ id: genId(), role: 'user', content: value, timestamp: Date.now() });
-    void runTurn(value);
+    inputQueueRef.current!.enqueue({ displayText: value, userText: value });
   }
 
   function runCommand(raw: string) {
@@ -216,6 +236,8 @@ export default function App() {
         pushSystem(SLASH_COMMANDS.map((c) => `${c.name.padEnd(10)}${c.description}`).join('\n'));
         break;
       case '/clear':
+        inputQueueRef.current!.clearWaiting();
+        if (inputQueueRef.current!.running) handleInterrupt();
         setHistory([]);
         conversationRef.current = [];
         // The transcript already lives in the terminal's scrollback, where
@@ -306,8 +328,7 @@ export default function App() {
         const turnText = extra
           ? `${invocationNote}\n\n${skill.body}\n\n---\n\nUser-supplied argument for this skill: ${extra}`
           : `${invocationNote}\n\n${skill.body}`;
-        pushHistory({ id: genId(), role: 'user', content: raw.trim(), timestamp: Date.now() });
-        void runTurn(turnText);
+        inputQueueRef.current!.enqueue({ displayText: raw.trim(), userText: turnText });
         break;
       }
       case '/system':
@@ -521,7 +542,6 @@ export default function App() {
       return;
     }
 
-    setBusy(true);
     cancelledRef.current = false;
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -580,13 +600,17 @@ export default function App() {
     if (!cancelledRef.current) {
       pushHistory(...closeStreaming(turn.messages));
       updatePending([]);
-      setBusy(false);
     }
-    abortControllerRef.current = null;
+    if (abortControllerRef.current === controller) abortControllerRef.current = null;
   }
 
+  queuedInputWorkerRef.current = async (turn) => {
+    pushHistory({ id: genId(), role: 'user', content: turn.displayText, timestamp: Date.now() });
+    await runTurn(turn.userText);
+  };
+
   function handleInterrupt() {
-    if (!busy) return;
+    if (!inputQueueRef.current?.running) return;
     cancelledRef.current = true;
     abortControllerRef.current?.abort();
 
@@ -601,7 +625,6 @@ export default function App() {
     });
     pushHistory(...finalized);
     updatePending([]);
-    setBusy(false);
 
     if (approvalResolveRef.current) {
       const resolve = approvalResolveRef.current;
@@ -612,12 +635,12 @@ export default function App() {
   }
 
   const turnCount = history.filter((m) => m.role === 'user').length;
-  const disabled = busy || !ready || modelsLoading;
+  const disabled = !ready || modelsLoading;
   const disabledLabel = !ready
     ? 'Starting up…'
     : modelsLoading
       ? 'Fetching models…'
-      : 'Mai is responding… (Esc to interrupt)';
+      : undefined;
 
   return (
     <Box flexDirection="column">
@@ -650,6 +673,8 @@ export default function App() {
           <InputPrompt
             history={inputHistory}
             disabled={disabled}
+            busy={busy}
+            queuedCount={queuedCount}
             disabledLabel={disabledLabel}
             onSubmit={handleSubmit}
             onInterrupt={handleInterrupt}
@@ -657,6 +682,7 @@ export default function App() {
         )}
         <StatusBar
           busy={busy}
+          queuedCount={queuedCount}
           turnCount={turnCount}
           model={configRef.current ? `${configRef.current.provider} · ${configRef.current.model}` : '…'}
           exitArmed={exitArmed}

@@ -8,6 +8,8 @@ import { startApiServer } from '../src/api.js';
 import type { Config } from '../src/config.js';
 import type { Content, LlmClient, StreamEvent, ToolDeclaration } from '../src/llm/types.js';
 
+let releaseFirstQueuedRun: (() => void) | null = null;
+
 process.env.MAI_API_HOST = '127.0.0.1';
 process.env.MAI_API_PORT = '0';
 process.env.MAI_API_ALLOW_WRITE = 'true';
@@ -28,6 +30,21 @@ class FakeClient implements LlmClient {
       .filter((part): part is { text: string } => 'text' in part)
       .map((part) => part.text)
       .join('\n');
+    const latestUserText = contents.at(-1)?.parts
+      .filter((part): part is { text: string } => 'text' in part)
+      .map((part) => part.text)
+      .join('\n');
+    if (latestUserText === 'queue first') {
+      await new Promise<void>((resolve) => {
+        releaseFirstQueuedRun = resolve;
+      });
+      yield { type: 'text', text: 'first queued response', thought: false };
+      return;
+    }
+    if (latestUserText === 'queue second') {
+      yield { type: 'text', text: 'second queued response', thought: false };
+      return;
+    }
     if (prompt.includes('write fixture') && !hasToolResponse) {
       yield { type: 'functionCall', call: { name: 'write_file', args: { path: 'changed.txt', content: 'changed by run' } } };
       return;
@@ -158,6 +175,46 @@ test('legacy chat endpoint remains compatible', async (t) => {
   });
   assert.equal(response.message, 'plain response');
   assert.ok(Array.isArray(response.history));
+});
+
+test('runs submitted during an active session run execute later in FIFO order', async (t) => {
+  releaseFirstQueuedRun = null;
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'mai-run-queue-test-'));
+  const { server, port } = await startApiServer({
+    config: fixtureConfig(workspace),
+    createClient: () => new FakeClient(),
+    stateFile: ':memory:',
+  });
+  const base = `http://127.0.0.1:${port}`;
+  t.after(async () => {
+    releaseFirstQueuedRun?.();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  const session = await json(base, '/v1/sessions', { method: 'POST', body: '{}' });
+  const first = await json(base, `/v1/sessions/${session.id}/runs`, {
+    method: 'POST', body: JSON.stringify({ input: 'queue first' }),
+  });
+  await waitForRun(base, String(first.id), 'running');
+  const second = await json(base, `/v1/sessions/${session.id}/runs`, {
+    method: 'POST', body: JSON.stringify({ input: 'queue second' }),
+  });
+  const queued = await json(base, `/v1/runs/${second.id}`);
+  assert.equal(queued.status, 'queued');
+
+  for (let attempt = 0; attempt < 100 && !releaseFirstQueuedRun; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(releaseFirstQueuedRun, 'first run should be waiting on the fixture gate');
+  releaseFirstQueuedRun();
+  await waitForRun(base, String(first.id), 'completed');
+  const completedSecond = await waitForRun(base, String(second.id), 'completed');
+  assert.equal(completedSecond.message, 'second queued response');
+
+  const messages = await json(base, `/v1/sessions/${session.id}/messages`);
+  const text = JSON.stringify(messages.messages);
+  assert.ok(text.indexOf('queue first') < text.indexOf('queue second'));
 });
 
 test('sessions, runs, and events survive an API restart', async () => {
