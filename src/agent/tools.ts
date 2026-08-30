@@ -13,6 +13,13 @@ const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_OUTPUT_CHARS = 100_000;
 const MAX_SEARCH_RESULTS = 100;
 const SKIPPED_DIRS = new Set(['.git', 'target', 'node_modules', 'dist', '.mai', '.agents']);
+const SENSITIVE_DIRS = new Set([
+  '.ssh', '.gnupg', '.aws', '.kube', '.docker', '.azure', '.terraform.d', 'gcloud', 'auth.conf.d',
+]);
+const SENSITIVE_FILES = new Set([
+  '.env', '.npmrc', '.netrc', 'credentials', 'credentials.json', 'auth.conf',
+  'shadow', 'gshadow', 'environ', 'cmdline',
+]);
 
 export type { ToolDeclaration };
 
@@ -63,7 +70,7 @@ export class ToolRegistry {
     const definitions: ToolDeclaration[] = [
       {
         name: 'list_files',
-        description: 'List the direct children of a workspace directory.',
+        description: 'List the direct children of a readable directory. Accepts absolute paths.',
         parameters: {
           type: 'object',
           properties: { path: { type: 'string', default: '.' } },
@@ -71,7 +78,7 @@ export class ToolRegistry {
       },
       {
         name: 'read_file',
-        description: 'Read a UTF-8 workspace file with line numbers.',
+        description: 'Read a UTF-8 file with line numbers. Accepts absolute paths; credential paths are blocked.',
         parameters: {
           type: 'object',
           required: ['path'],
@@ -84,7 +91,7 @@ export class ToolRegistry {
       },
       {
         name: 'search_files',
-        description: 'Search UTF-8 files below a workspace path for literal text.',
+        description: 'Search UTF-8 files below a readable path for literal text. Accepts absolute paths.',
         parameters: {
           type: 'object',
           required: ['query'],
@@ -101,7 +108,7 @@ export class ToolRegistry {
       definitions.push(
         {
           name: 'write_file',
-          description: 'Create or replace a UTF-8 file inside the workspace.',
+          description: 'Create or replace a UTF-8 file inside the workspace; absolute workspace paths are accepted.',
           parameters: {
             type: 'object',
             required: ['path', 'content'],
@@ -110,7 +117,7 @@ export class ToolRegistry {
         },
         {
           name: 'replace_in_file',
-          description: 'Replace one exact, uniquely occurring string in a workspace file.',
+          description: 'Replace one exact, uniquely occurring string in a workspace file; absolute workspace paths are accepted.',
           parameters: {
             type: 'object',
             required: ['path', 'old', 'new'],
@@ -203,6 +210,7 @@ export class ToolRegistry {
 
   private async listFiles(input: string): Promise<string> {
     const directory = await this.resolveExisting(input);
+    ensureReadable(directory);
     const stat = await fs.stat(directory);
     if (!stat.isDirectory()) throw new Error(`Not a directory: ${input}`);
 
@@ -215,6 +223,7 @@ export class ToolRegistry {
 
   private async readFile(input: string, startLine?: number, endLine?: number): Promise<string> {
     const target = await this.resolveExisting(input);
+    ensureReadable(target);
     const stat = await fs.stat(target);
     if (!stat.isFile()) throw new Error(`Not a file: ${input}`);
 
@@ -234,6 +243,7 @@ export class ToolRegistry {
   private async searchFiles(query: string, input: string, caseSensitive: boolean): Promise<string> {
     if (!query) throw new Error('Search query cannot be empty');
     const start = await this.resolveExisting(input);
+    ensureReadable(start);
 
     const files: string[] = [];
     await collectFiles(start, files);
@@ -251,8 +261,8 @@ export class ToolRegistry {
       for (let i = 0; i < lines.length; i++) {
         const haystack = caseSensitive ? lines[i] : lines[i].toLowerCase();
         if (!haystack.includes(needle)) continue;
-        const relative = path.relative(this.workspace, filePath);
-        matches.push(`${relative}:${i + 1}: ${truncate(lines[i].trim(), 300)}`);
+        const display = this.isInWorkspace(filePath) ? path.relative(this.workspace, filePath) : filePath;
+        matches.push(`${display}:${i + 1}: ${truncate(lines[i].trim(), 300)}`);
         if (matches.length === MAX_SEARCH_RESULTS) {
           return `${matches.join('\n')}\n(result limit reached)`;
         }
@@ -270,7 +280,7 @@ export class ToolRegistry {
 
   private async replaceInFile(input: string, oldText: string, newText: string): Promise<string> {
     if (!oldText) throw new Error('Replacement target cannot be empty');
-    const target = await this.resolveExisting(input);
+    const target = this.ensureInWorkspace(await this.resolveExisting(input));
     const content = await readUtf8File(target);
     const occurrences = countOccurrences(content, oldText);
     if (occurrences !== 1) {
@@ -300,20 +310,18 @@ export class ToolRegistry {
   // --- path safety -------------------------------------------------------
 
   private async resolveExisting(input: string): Promise<string> {
-    const relative = normalizeRelative(input);
-    const candidate = path.join(this.workspace, relative);
+    const candidate = resolveInputPath(this.workspace, input);
     let real: string;
     try {
       real = await fs.realpath(candidate);
     } catch {
-      throw new Error(`Workspace path does not exist or cannot be resolved: ${input}`);
+      throw new Error(`Path does not exist or cannot be resolved: ${input}`);
     }
-    return this.ensureInWorkspace(real);
+    return real;
   }
 
   private async resolveForWrite(input: string): Promise<string> {
-    const relative = normalizeRelative(input);
-    const candidate = path.join(this.workspace, relative);
+    const candidate = resolveInputPath(this.workspace, input);
 
     if (existsSync(candidate)) {
       const real = await fs.realpath(candidate);
@@ -323,7 +331,7 @@ export class ToolRegistry {
     let ancestor = candidate;
     while (!existsSync(ancestor)) {
       const parent = path.dirname(ancestor);
-      if (parent === ancestor) throw new Error('Workspace path has no existing ancestor');
+      if (parent === ancestor) throw new Error('Write path has no existing ancestor');
       ancestor = parent;
     }
     const real = await fs.realpath(ancestor);
@@ -332,22 +340,36 @@ export class ToolRegistry {
   }
 
   private ensureInWorkspace(real: string): string {
-    if (real === this.workspace || real.startsWith(this.workspace + path.sep)) return real;
-    throw new Error(`Path escapes workspace: ${real}`);
+    if (this.isInWorkspace(real)) return real;
+    throw new Error(`Writes outside the workspace are not allowed: ${real}`);
+  }
+
+  private isInWorkspace(real: string): boolean {
+    return real === this.workspace || real.startsWith(this.workspace + path.sep);
   }
 }
 
-function normalizeRelative(input: string): string {
+function resolveInputPath(workspace: string, input: string): string {
   const raw = input.length === 0 ? '.' : input;
-  if (path.isAbsolute(raw)) throw new Error(`Absolute paths are not allowed: ${input}`);
+  return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(workspace, raw);
+}
 
-  const parts: string[] = [];
-  for (const part of raw.split('/')) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') throw new Error(`Parent or rooted paths are not allowed: ${input}`);
-    parts.push(part);
+function ensureReadable(target: string): void {
+  if (isSensitivePath(target)) {
+    throw new Error(`Reading credential, secret, or process-environment paths is not allowed: ${target}`);
   }
-  return parts.join('/');
+}
+
+function isSensitivePath(target: string): boolean {
+  const parts = path.resolve(target).split(path.sep).filter(Boolean).map((part) => part.toLowerCase());
+  const base = parts.at(-1) ?? '';
+  return parts.some((part) => SENSITIVE_DIRS.has(part))
+    || SENSITIVE_FILES.has(base)
+    || base.startsWith('.env.')
+    || base.endsWith('_rsa')
+    || base.endsWith('_dsa')
+    || base.endsWith('_ecdsa')
+    || base.endsWith('_ed25519');
 }
 
 async function readUtf8File(target: string): Promise<string> {
@@ -359,12 +381,14 @@ async function readUtf8File(target: string): Promise<string> {
 }
 
 async function collectFiles(start: string, files: string[]): Promise<void> {
-  const stat = await fs.stat(start);
+  if (isSensitivePath(start)) return;
+  const stat = await fs.stat(start).catch(() => null);
+  if (!stat) return;
   if (stat.isFile()) {
     files.push(start);
     return;
   }
-  const entries = await fs.readdir(start, { withFileTypes: true });
+  const entries = await fs.readdir(start, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (entry.isDirectory()) {
       if (!SKIPPED_DIRS.has(entry.name)) {

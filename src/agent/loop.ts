@@ -165,9 +165,10 @@ export function buildSystemInstruction(workspace: string, skillCatalog = ''): st
     '',
     workspace,
     '',
-    'Inspect the workspace before changing it. Make focused changes, preserve existing ' +
-      'conventions, and verify completed work with the available tools when you can. Never ' +
-      'access paths outside the workspace. Never reveal secrets or environment variables.',
+    'Inspect the workspace before changing it. You may inspect readable absolute paths outside ' +
+      'the workspace when they are relevant to system-level diagnosis, but file writes remain ' +
+      'workspace-only. Make focused changes, preserve existing conventions, and verify completed ' +
+      'work with the available tools when you can. Never reveal secrets or environment variables.',
     '',
     'Call tools one at a time and base each next action on the previous result. Some tool ' +
       'calls (destructive or risky shell commands, for example) require the user to approve ' +

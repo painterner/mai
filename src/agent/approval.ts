@@ -44,10 +44,10 @@ export function classifyTool(tool: string, args: unknown): ApprovalRequirement {
     case 'read_file':
     case 'search_files':
     case 'load_skill':
-      return allow('Read-only workspace tool');
+      return allow('Read-only filesystem tool');
     case 'write_file':
     case 'replace_in_file':
-      return allow('Write is constrained to the workspace');
+      return allow('Write is constrained to the workspace, including for absolute paths');
     case 'run_command': {
       const command = (args as { command?: unknown } | null)?.command;
       if (typeof command === 'string' && command.trim().length > 0) {

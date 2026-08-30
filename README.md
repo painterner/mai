@@ -4,8 +4,9 @@ An Ink (React-for-terminals) CLI agent, in the same family as Gemini CLI /
 Codex CLI / Claude Code's terminal front-ends. It talks to **any number of
 providers declared in `providers.json`** — Gemini's native protocol or
 anything OpenAI-compatible (real OpenAI, Groq, DeepSeek, OpenRouter, a local
-vLLM/Ollama server, ...) — with native function calling, can read/search/write
-files in the current workspace, and runs shell commands through a **Rust
+vLLM/Ollama server, ...) — with native function calling, can inspect readable
+system paths while keeping file writes inside the current workspace, and runs
+shell commands through a **Rust
 sidecar** that sandboxes them (bubblewrap + a hand-built seccomp filter —
 see [`../mail-cli-rust`](../mail-cli-rust)). Risky or destructive actions
 pause for interactive approval before they run.
@@ -160,10 +161,11 @@ terminal.
   parsing, native function/tool calling), no SDK dependency — wire formats
   confirmed against Google's/OpenAI's docs and the sibling Rust client.
   `src/llm/index.ts` has the `createLlmClient(config)` factory.
-- `src/agent/tools.ts` — `list_files` / `read_file` / `search_files` /
-  `write_file` / `replace_in_file` / `run_command`, with workspace-escape
-  protection (rejects `..`, absolute paths, and symlink escapes via
-  `realpath`).
+- `src/agent/tools.ts` — `list_files` / `read_file` / `search_files` accept
+  readable absolute paths for system diagnosis while blocking known
+  credential locations. `write_file` / `replace_in_file` stay confined to
+  the workspace, but accept absolute paths that resolve inside it; symlink
+  escapes are still rejected via `realpath`.
 - `src/agent/approval.ts` — the risk-classification rule engine (ported
   from Rust, including its small shell-script tokenizer).
 - `src/agent/skills.ts` — discovers and parses `SKILL.md` files from
