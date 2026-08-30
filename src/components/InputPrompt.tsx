@@ -2,6 +2,12 @@ import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { theme } from '../theme.js';
 import { matchCommands } from '../commands.js';
+import {
+  insertAtCursor,
+  isShiftEnterInput,
+  moveCursorVertically,
+  normalizeLineBreaks,
+} from '../input-edit.js';
 
 interface Props {
   history: string[];
@@ -41,6 +47,8 @@ export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onInte
     if (key.upArrow) {
       if (menuVisible) {
         setMenuIndex((i) => Math.max(0, i - 1));
+      } else if (value.includes('\n')) {
+        setCursor((current) => moveCursorVertically(value, current, -1));
       } else if (history.length > 0) {
         const nextIndex = historyIndex === null ? history.length - 1 : Math.max(0, historyIndex - 1);
         if (historyIndex === null) setDraft(value);
@@ -53,6 +61,8 @@ export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onInte
     if (key.downArrow) {
       if (menuVisible) {
         setMenuIndex((i) => Math.min(suggestions.length - 1, i + 1));
+      } else if (value.includes('\n')) {
+        setCursor((current) => moveCursorVertically(value, current, 1));
       } else if (historyIndex !== null) {
         const nextIndex = historyIndex + 1;
         if (nextIndex >= history.length) {
@@ -68,6 +78,11 @@ export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onInte
 
     if (key.tab) {
       if (menuVisible) setValueAndCursor(suggestions[clampedMenuIndex].name + ' ');
+      return;
+    }
+
+    if (isShiftEnterInput(input, key.return && key.shift)) {
+      applyInsertion('\n');
       return;
     }
 
@@ -118,34 +133,23 @@ export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onInte
 
     if (!input) return;
 
-    // A fast burst of keystrokes — or a terminal paste — can arrive as one
-    // multi-character chunk with newlines embedded in it (Ink only
-    // recognizes `key.return` when '\r' arrives completely alone). This is
-    // a single-line field, so flatten the breaks to spaces rather than
-    // inserting a raw \r; an earlier version submitted at the first break
-    // and silently dropped everything after it, so pasting a three-line
-    // snippet sent one line and lost two.
+    // A terminal paste can arrive as one multi-character chunk containing
+    // CRLF/CR line endings. Preserve it as multiline input and only submit
+    // from the explicit, non-shifted key.return branch above.
     if (/[\r\n]/.test(input)) {
-      const flattened = input
-        .split(/\r\n|\r|\n/)
-        .filter((part) => part.length)
-        .join(' ');
-      const next = value.slice(0, cursor) + flattened + value.slice(cursor);
-      // Only a chunk that *ends* in a newline is the user pressing Enter.
-      if (/[\r\n]$/.test(input)) {
-        submit(next);
-      } else {
-        setValue(next);
-        setCursor(cursor + flattened.length);
-      }
+      applyInsertion(normalizeLineBreaks(input));
       return;
     }
 
     // Regular keystroke or a pasted chunk — insert at the cursor.
-    const next = value.slice(0, cursor) + input + value.slice(cursor);
-    setValue(next);
-    setCursor((c) => c + input.length);
+    applyInsertion(input);
   });
+
+  function applyInsertion(text: string) {
+    const next = insertAtCursor(value, cursor, text);
+    setValue(next.value);
+    setCursor(next.cursor);
+  }
 
   function submit(text: string) {
     if (!text.trim()) return;
@@ -173,8 +177,9 @@ export function InputPrompt({ history, disabled, disabledLabel, onSubmit, onInte
   }
 
   const before = value.slice(0, cursor);
-  const atCursor = value[cursor] ?? ' ';
-  const after = value.slice(cursor + 1);
+  const cursorCharacter = value[cursor];
+  const atCursor = cursorCharacter === '\n' || cursorCharacter === undefined ? ' ' : cursorCharacter;
+  const after = cursorCharacter === '\n' ? `\n${value.slice(cursor + 1)}` : value.slice(cursor + 1);
 
   return (
     <Box flexDirection="column">

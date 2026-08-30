@@ -23,7 +23,8 @@ export function Header({ cwd }: { cwd: string }) {
       </Box>
       <Box>
         <Text color={theme.dim}>
-          Type a message and press Enter · <Text color={theme.accent}>/</Text> for commands ·{' '}
+          <Text color={theme.accent}>Enter</Text> to send · <Text color={theme.accent}>Shift+Enter</Text>{' '}
+          for newline · <Text color={theme.accent}>/</Text> for commands ·{' '}
           <Text color={theme.accent}>Ctrl+C</Text> twice to exit
         </Text>
       </Box>
