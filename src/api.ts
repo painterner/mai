@@ -39,6 +39,7 @@ export interface ApiDependencies {
   config?: Config;
   createClient?: (config: Config) => LlmClient;
   stateFile?: string;
+  mcp?: boolean;
 }
 
 interface ChatRequest {
@@ -87,6 +88,7 @@ export async function createApiServer(
     config.workspace,
     { write: options.allowWrite, shell: options.allowShell && config.allowShell },
     config.sandboxBinary,
+    { mcp: dependencies.mcp ?? !dependencies.createClient },
   );
   const files = await WorkspaceFiles.create(config.workspace);
   const store = new ApiStore(options.stateFile);
@@ -100,6 +102,10 @@ export async function createApiServer(
     sandboxBinary: config.sandboxBinary,
     selectConfig: (provider, model) => selectConfig(config, provider, model),
     createClient: clientFactory,
+    createTools: () => tools.refresh({
+      write: options.allowWrite,
+      shell: options.allowShell && config.allowShell,
+    }),
   });
   const terminals = new TerminalManager(store, tools.workspacePath, config.sandboxBinary);
   const context: ApiContext = { config, tools, options, store, runs, terminals, files, createClient: clientFactory };
@@ -113,6 +119,7 @@ export async function createApiServer(
   server.on('close', () => {
     runs.stopAll();
     terminals.closeAll();
+    void tools.close();
     store.close();
   });
   return { server, options };
@@ -154,7 +161,7 @@ async function handleRequest(context: ApiContext, req: IncomingMessage, res: Ser
       service: 'mai-api', version: 1, stateful: true,
       features: {
         sessions: true, runs: true, resumableSse: true, approvals: true, steer: true, stop: true,
-        skills: true, tools: true, files: true,
+        skills: true, tools: true, mcp: true, files: true,
         interactiveTerminals: Boolean(context.config.sandboxBinary), legacyChat: true,
       },
     });
@@ -394,9 +401,10 @@ function writeSse(res: ServerResponse, event: StoredEvent): void {
 }
 
 async function freshTools(context: ApiContext): Promise<ToolRegistry> {
-  return ToolRegistry.create(context.tools.workspacePath,
-    { write: context.options.allowWrite, shell: context.options.allowShell && context.config.allowShell },
-    context.config.sandboxBinary);
+  return context.tools.refresh({
+    write: context.options.allowWrite,
+    shell: context.options.allowShell && context.config.allowShell,
+  });
 }
 
 function selectConfig(base: Config, providerName?: string, model?: string): Config {

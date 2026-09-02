@@ -141,6 +141,39 @@ deliberately minimal YAML-subset parser (flat scalars, quoted strings,
 `>`/`|` block scalars) rather than a real YAML dependency, sized to what
 `SKILL.md` frontmatter actually uses.
 
+## MCP tools
+
+Mai is an MCP stdio client. A self-contained Skill can declare an MCP tool
+dependency in `agents/openai.yaml` and provide `scripts/serve.sh`; Mai starts
+that local server, performs MCP initialization and `tools/list`, exposes its
+tools to the root model, and closes it with the CLI/GUI/API process. This is
+how the `brave-search` Skill keeps its API token inside its own server while
+exposing only `web_search` to the model. A failed MCP server is isolated and
+reported without preventing Mai from starting.
+
+Standalone servers can be configured globally in `~/.agents/mcp.json` or
+per workspace in `<workspace>/.agents/mcp.json` (workspace entries override
+same-named global entries):
+
+```json
+{
+  "mcpServers": {
+    "example": {
+      "command": "node",
+      "args": ["/absolute/path/server.mjs"],
+      "cwd": "${HOME}/projects/example",
+      "env": { "EXAMPLE_TOKEN": "${EXAMPLE_TOKEN}" }
+    }
+  }
+}
+```
+
+Environment placeholders are resolved by the Mai host and are never added
+to model prompts or tool descriptions. MCP tools marked read-only are
+auto-approved; tools that may mutate external state use the existing human
+approval flow. Built-in tool names win collisions, with the MCP tool exposed
+as `<server>__<tool>` instead.
+
 ## Switching to the GUI
 
 Type `/gui` to hand this conversation off to [`../mai-cli-gui`](../mai-cli-gui)
@@ -173,6 +206,8 @@ terminal.
   from Rust, including its small shell-script tokenizer).
 - `src/agent/skills.ts` — discovers and parses `SKILL.md` files from
   `~/.agents/skills` + `<workspace>/.agents/skills`; see "Skills" above.
+- `src/agent/mcp.ts` — discovers, starts, registers, calls, and closes stdio
+  MCP servers; see "MCP tools" above.
 - `src/agent/loop.ts` — orchestrates model turns, tool execution, and the
   approval gate; yields UI-facing events.
 - `src/sandbox/sidecar.ts` — talks JSON-over-stdio to `mai-sandbox`.

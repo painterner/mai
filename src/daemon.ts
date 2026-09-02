@@ -41,6 +41,7 @@ type OutEvent =
       hasApiKey: boolean;
       sandbox: string | null;
       resumedMessages: Message[];
+      mcpIssues: Array<{ server: string; message: string }>;
     }
   | { type: 'fatal'; message: string }
   | { type: 'handoffWritten' }
@@ -150,6 +151,7 @@ async function init() {
     hasApiKey: Boolean(config.apiKey),
     sandbox: config.sandboxBinary,
     resumedMessages,
+    mcpIssues: tools.mcpIssues,
   });
 
   const rl = readline.createInterface({ input: process.stdin });
@@ -241,7 +243,17 @@ async function init() {
       }
     }
   });
-  rl.on('close', () => process.exit(0));
+  let closing = false;
+  const shutdown = () => {
+    if (closing) return;
+    closing = true;
+    currentAbort?.abort();
+    settlePendingApproval(false);
+    void tools.close().finally(() => process.exit(0));
+  };
+  rl.on('close', shutdown);
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 init().catch((err) => {

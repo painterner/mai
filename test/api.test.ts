@@ -12,6 +12,7 @@ let releaseFirstQueuedRun: (() => void) | null = null;
 
 process.env.MAI_API_HOST = '127.0.0.1';
 process.env.MAI_API_PORT = '0';
+process.env.MAI_API_KEY = '';
 process.env.MAI_API_ALLOW_WRITE = 'true';
 process.env.MAI_API_ALLOW_SHELL = 'true';
 process.env.MAI_API_APPROVE_RISKY = 'false';

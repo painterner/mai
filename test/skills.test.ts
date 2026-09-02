@@ -19,6 +19,11 @@ test('discovers a skill directory linked into the workspace skills folder', asyn
     path.join(sharedSkill, 'SKILL.md'),
     '---\nname: linked-astro\ndescription: Linked fixture\n---\nUse the linked skill.\n',
   );
+  await fs.mkdir(path.join(sharedSkill, 'agents'), { recursive: true });
+  await fs.writeFile(
+    path.join(sharedSkill, 'agents', 'openai.yaml'),
+    'interface:\n  display_name: Linked\n\ndependencies:\n  tools:\n    - type: "mcp"\n      value: "linked_server"\n      transport: "stdio"\n',
+  );
   await fs.symlink(sharedSkill, path.join(skillsDir, 'astro-setup'));
 
   const skills = await discoverSkills(workspace);
@@ -27,6 +32,7 @@ test('discovers a skill directory linked into the workspace skills folder', asyn
   assert.equal(linked.source, 'workspace');
   assert.equal(linked.body, 'Use the linked skill.');
   assert.equal(linked.dir, path.join(skillsDir, 'astro-setup'));
+  assert.deepEqual(linked.mcpDependencies, ['linked_server']);
 });
 
 test('ignores broken skill links and links to ordinary files', async (t) => {

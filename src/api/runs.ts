@@ -25,6 +25,7 @@ export interface RunManagerOptions {
   sandboxBinary: string | null;
   selectConfig: (provider?: string, model?: string) => Config;
   createClient: (config: Config) => LlmClient;
+  createTools?: () => Promise<ToolRegistry>;
 }
 
 export class RunManager {
@@ -128,14 +129,17 @@ export class RunManager {
       model: config.model,
     });
     let message = '';
+    let tools: ToolRegistry | null = null;
     try {
       // Recreate the registry per run so newly installed workspace skills are
       // visible without restarting the API process.
-      const tools = await ToolRegistry.create(
-        this.options.workspace,
-        { write: this.options.allowWrite, shell: this.options.allowShell },
-        this.options.sandboxBinary,
-      );
+      tools = this.options.createTools
+        ? await this.options.createTools()
+        : await ToolRegistry.create(
+            this.options.workspace,
+            { write: this.options.allowWrite, shell: this.options.allowShell },
+            this.options.sandboxBinary,
+          );
       if (this.shuttingDown) return;
       const generator = runAgentTurn(
         {
@@ -191,6 +195,7 @@ export class RunManager {
         this.emit(run.id, 'run.failed', { message, error: errorMessage });
       }
     } finally {
+      await tools?.close();
       this.active.delete(run.id);
       this.activeSession.delete(session.id);
       this.launchNext(session.id);

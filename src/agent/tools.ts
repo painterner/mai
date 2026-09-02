@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { classifyTool, type ApprovalRequirement } from './approval.js';
 import { discoverSkills, formatSkillCatalog, type Skill } from './skills.js';
+import { McpRegistry } from './mcp.js';
 import { runSandboxed } from '../sandbox/sidecar.js';
 import type { ToolDeclaration } from '../llm/types.js';
 
@@ -34,12 +35,15 @@ export class ToolRegistry {
     private readonly permissions: ToolPermissions,
     private readonly sandboxBinary: string | null,
     private readonly skills: Skill[],
+    private readonly mcp: McpRegistry | null,
+    private readonly ownsMcp: boolean,
   ) {}
 
   static async create(
     workspace: string,
     permissions: ToolPermissions,
     sandboxBinary: string | null,
+    options: { mcp?: boolean } = {},
   ): Promise<ToolRegistry> {
     const real = await fs.realpath(workspace).catch(() => {
       throw new Error(`Failed to resolve workspace: ${workspace}`);
@@ -49,7 +53,17 @@ export class ToolRegistry {
       throw new Error(`Workspace is not a directory: ${workspace}`);
     }
     const skills = await discoverSkills(real);
-    return new ToolRegistry(real, permissions, sandboxBinary, skills);
+    const mcp = options.mcp === false ? null : await McpRegistry.create(real, skills);
+    return new ToolRegistry(real, permissions, sandboxBinary, skills, mcp, true);
+  }
+
+  async refresh(permissions: ToolPermissions = this.permissions): Promise<ToolRegistry> {
+    const skills = await discoverSkills(this.workspace);
+    return new ToolRegistry(this.workspace, permissions, this.sandboxBinary, skills, this.mcp, false);
+  }
+
+  async close(): Promise<void> {
+    if (this.ownsMcp) await this.mcp?.close();
   }
 
   get workspacePath(): string {
@@ -64,6 +78,10 @@ export class ToolRegistry {
   /** Formatted "- name: description" catalog of model-invocable skills, for the system prompt. */
   get skillCatalog(): string {
     return formatSkillCatalog(this.skills);
+  }
+
+  get mcpIssues() {
+    return this.mcp?.issues ?? [];
   }
 
   definitions(): ToolDeclaration[] {
@@ -161,10 +179,12 @@ export class ToolRegistry {
       });
     }
 
+    definitions.push(...(this.mcp?.definitions() ?? []));
     return definitions;
   }
 
   approvalRequirement(tool: string, args: unknown): ApprovalRequirement {
+    if (this.mcp?.has(tool)) return this.mcp.approvalRequirement(tool);
     return classifyTool(tool, args);
   }
 
@@ -193,6 +213,7 @@ export class ToolRegistry {
       case 'load_skill':
         return this.loadSkill(str(record.name));
       default:
+        if (this.mcp?.has(tool)) return this.mcp.execute(tool, record, signal);
         throw new Error(`Unknown tool: ${tool}`);
     }
   }

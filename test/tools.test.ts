@@ -11,7 +11,7 @@ test('read-only tools accept absolute paths outside the workspace', async (t) =>
   const diagnosticRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'mai-tools-diagnostic-'));
   const diagnosticFile = path.join(diagnosticRoot, 'apt-proxy.conf');
   await fs.writeFile(diagnosticFile, 'Acquire::http::Proxy "http://127.0.0.1:7890";\n');
-  const tools = await ToolRegistry.create(workspace, { write: true, shell: false }, null);
+  const tools = await ToolRegistry.create(workspace, { write: true, shell: false }, null, { mcp: false });
   t.after(async () => {
     await fs.rm(workspace, { recursive: true, force: true });
     await fs.rm(diagnosticRoot, { recursive: true, force: true });
@@ -33,7 +33,7 @@ test('read-only tools accept absolute paths outside the workspace', async (t) =>
 test('writes accept absolute workspace paths but remain workspace-confined', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'mai-tools-write-'));
   const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'mai-tools-outside-'));
-  const tools = await ToolRegistry.create(workspace, { write: true, shell: false }, null);
+  const tools = await ToolRegistry.create(workspace, { write: true, shell: false }, null, { mcp: false });
   t.after(async () => {
     await fs.rm(workspace, { recursive: true, force: true });
     await fs.rm(outside, { recursive: true, force: true });
@@ -63,7 +63,7 @@ test('known credential paths remain unreadable through absolute paths', async (t
   const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'mai-tools-secrets-outside-'));
   const secret = path.join(outside, '.env');
   await fs.writeFile(secret, 'TOKEN=secret\n');
-  const tools = await ToolRegistry.create(workspace, { write: false, shell: false }, null);
+  const tools = await ToolRegistry.create(workspace, { write: false, shell: false }, null, { mcp: false });
   t.after(async () => {
     await fs.rm(workspace, { recursive: true, force: true });
     await fs.rm(outside, { recursive: true, force: true });

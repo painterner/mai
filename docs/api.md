@@ -1,7 +1,7 @@
 # Mai Agent Gateway API
 
 Mai API 暴露的不是普通模型聊天，而是 CLI/GUI 使用的同一套 agent runtime：模型、系统
-提示、skills、文件工具、Shell 工具和 `mai-sandbox`。新客户端应使用持久化
+提示、skills、MCP 工具、文件工具、Shell 工具和 `mai-sandbox`。新客户端应使用持久化
 Session/Run API；旧 `/v1/chat` 继续兼容。
 
 ## 启动
@@ -192,6 +192,12 @@ GET /v1/skills/{name}
 
 `/v1/tools` 返回当前权限下实际向模型提供的 function declarations。Skills 在每个 Run
 开始时重新扫描，因此新增或修改 workspace skill 不需要重启 API。
+
+MCP stdio server 在 API 进程启动时加载，并由所有 Session/Run 共享。Skill 可以通过
+`agents/openai.yaml` 声明 MCP 依赖并提供 `scripts/serve.sh`；也可以使用
+`~/.agents/mcp.json` 或 `<workspace>/.agents/mcp.json` 显式配置。修改 MCP 配置或新增 MCP
+server 后需要重启 `mai-api`。MCP Token 由 server 自己或配置的环境变量持有，不进入模型
+上下文。
 
 列目录和读取文件：
 

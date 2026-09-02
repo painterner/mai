@@ -99,6 +99,9 @@ export default function App() {
         if (cancelled) return;
         toolsRef.current = registry;
         systemInstructionRef.current = buildSystemInstruction(registry.workspacePath, registry.skillCatalog);
+        for (const issue of registry.mcpIssues) {
+          pushError(`MCP server "${issue.server}" is unavailable: ${issue.message}`);
+        }
 
         const handoff = await readAndClearHandoff(registry.workspacePath).catch(() => null);
         if (handoff) {
@@ -129,6 +132,7 @@ export default function App() {
     () => () => {
       if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
       abortControllerRef.current?.abort();
+      void toolsRef.current?.close();
     },
     [],
   );

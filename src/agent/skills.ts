@@ -19,11 +19,13 @@ export interface Skill {
   source: 'global' | 'workspace';
   /**
    * `disable-model-invocation: true` in frontmatter — the skill's author
-   * gated it behind an explicit trigger (a slash command, typically) this
-   * CLI doesn't implement per-skill, so it's discovered and listable but
-   * never offered to the model or served by `load_skill`.
+   * gated it behind an explicit trigger. It remains listable and manually
+   * invocable through `/<name>` or `/skills <name>`, but is never offered
+   * to the model or served by `load_skill`.
    */
   modelInvocable: boolean;
+  /** MCP server names declared under dependencies.tools in agents/openai.yaml. */
+  mcpDependencies: string[];
 }
 
 const GLOBAL_SKILLS_DIR = path.join(os.homedir(), '.agents', 'skills');
@@ -84,9 +86,61 @@ async function scanSkillsDir(dir: string, source: Skill['source']): Promise<Skil
       process.stderr.write(`Skipping malformed skill (needs name + description frontmatter): ${skillFile}\n`);
       continue;
     }
-    skills.push({ ...parsed, dir: skillDir, source });
+    const mcpDependencies = await readMcpDependencies(skillDir);
+    skills.push({ ...parsed, dir: skillDir, source, mcpDependencies });
   }
   return skills;
+}
+
+async function readMcpDependencies(skillDir: string): Promise<string[]> {
+  const metadata = await fs.readFile(path.join(skillDir, 'agents', 'openai.yaml'), 'utf8').catch(() => '');
+  if (!metadata) return [];
+
+  // Parse only the small dependency surface we own here, without claiming
+  // to be a general YAML parser. Each list item is collected as flat
+  // key/value fields, then MCP entries contribute their `value` (server id).
+  const dependencies: string[] = [];
+  let inDependencies = false;
+  let inTools = false;
+  let item: Record<string, string> | null = null;
+  const flush = () => {
+    if (item?.type === 'mcp' && item.value) dependencies.push(item.value);
+    item = null;
+  };
+
+  for (const line of metadata.split(/\r?\n/)) {
+    if (!line.trim() || line.trimStart().startsWith('#')) continue;
+    const indent = line.length - line.trimStart().length;
+    const trimmed = line.trim();
+    if (indent === 0) {
+      flush();
+      inDependencies = trimmed === 'dependencies:';
+      inTools = false;
+      continue;
+    }
+    if (!inDependencies) continue;
+    if (indent === 2) {
+      flush();
+      inTools = trimmed === 'tools:';
+      continue;
+    }
+    if (!inTools || indent < 4) continue;
+    if (trimmed.startsWith('-')) {
+      flush();
+      item = {};
+      parseMetadataField(trimmed.slice(1).trim(), item);
+    } else if (item) {
+      parseMetadataField(trimmed, item);
+    }
+  }
+  flush();
+  return [...new Set(dependencies)];
+}
+
+function parseMetadataField(text: string, target: Record<string, string>): void {
+  const match = text.match(/^([A-Za-z0-9_-]+):\s*(.*?)\s*$/);
+  if (!match) return;
+  target[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
 }
 
 function parseSkillFile(
