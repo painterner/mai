@@ -20,6 +20,7 @@ interface Props {
   disabledLabel?: string;
   onSubmit: (value: string) => void;
   onInterrupt?: () => void;
+  suggestionLimit?: number;
 }
 
 /**
@@ -36,6 +37,7 @@ export function InputPrompt({
   disabledLabel,
   onSubmit,
   onInterrupt,
+  suggestionLimit = 12,
 }: Props) {
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
@@ -46,7 +48,7 @@ export function InputPrompt({
   // Keep the live region bounded when `/` matches a large personal skill
   // library. Typing another character narrows the list immediately.
   const suggestions = value.startsWith('/') && value.length > 0
-    ? matchCommands(value, skills).slice(0, 12)
+    ? matchCommands(value, skills).slice(0, Math.max(0, suggestionLimit))
     : [];
   const menuVisible = suggestions.length > 0;
   const clampedMenuIndex = Math.min(menuIndex, Math.max(suggestions.length - 1, 0));

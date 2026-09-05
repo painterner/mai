@@ -17,6 +17,10 @@ export interface Message {
   content: string;
   /** True while an assistant/thought message is actively streaming in. */
   streaming?: boolean;
+  /** UI-only fragment flags used when a live reply is committed incrementally. */
+  continuation?: boolean;
+  continues?: boolean;
+  startsInCode?: boolean;
   tool?: ToolCallInfo;
   timestamp: number;
 }

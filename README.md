@@ -9,7 +9,9 @@ system paths while keeping file writes inside the current workspace, and runs
 shell commands through a **Rust
 sidecar** that sandboxes them (bubblewrap + a hand-built seccomp filter —
 see [`../mail-cli-rust`](../mail-cli-rust)). Risky or destructive actions
-pause for interactive approval before they run.
+pause for interactive approval before they run. Sandboxed commands inherit
+the execution node's network, so approved `curl`, Git, and package-manager
+operations can access the internet.
 
 ## Setup
 

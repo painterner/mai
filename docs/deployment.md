@@ -219,7 +219,8 @@ skills/tools、直接文件读取以及交互式 sandbox PTY。数据库默认�
 并调用 `/v1/runs/{id}/approval`。
 
 Shell 内部仍使用 bubblewrap namespaces、只读容器根目录、仅 `/workspace` 和 `/tmp`
-可写、Mai seccomp BPF 过滤器以及无网络命令环境。
+可写以及 Mai seccomp BPF 过滤器。命令继承其执行节点的网络：本地/Desktop 使用宿主
+网络，Docker 使用容器网络，因此模型可直接运行 `curl`、Git 和包管理器联网。
 
 ### 启动
 
@@ -265,7 +266,7 @@ curl -X POST "http://127.0.0.1:3141/v1/sessions/$SESSION_ID/runs" \
 
 ### Docker 权限为什么这样设置
 
-Docker 默认 seccomp/AppArmor 会阻止 bubblewrap 创建嵌套 user/PID/network namespace，
+Docker 默认 seccomp/AppArmor 会阻止 bubblewrap 创建嵌套 user/PID namespace，
 所以 Compose 只对 Mai 容器关闭这两层 Docker 策略。Mai 进程仍以 uid 1000 运行，容器
 没有 `SYS_ADMIN` capability，也不是 `privileged`，不挂载 Docker socket 或宿主设备；
 实际命令仍进入 Mai 的内层 bubblewrap + seccomp sandbox。

@@ -17,6 +17,12 @@ import { useTerminalSize } from './hooks/useTerminalSize.js';
 import type { Message } from './types.js';
 import { genId } from './utils.js';
 import { SerialQueue } from './serial-queue.js';
+import {
+  coalesceStreamFragments,
+  estimatePendingRows,
+  flushStreamingForScrollback,
+  liveRegionLayout,
+} from './terminal-layout.js';
 
 // Erase screen + scrollback, then home the cursor. Same sequence
 // `ansi-escapes`' clearTerminal emits on POSIX; inlined so this doesn't
@@ -65,6 +71,8 @@ export default function App() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const pendingProviderRef = useRef<ProviderDef | null>(null);
   const pendingDefaultModelRef = useRef('');
+  const terminalSizeRef = useRef({ columns, rows });
+  terminalSizeRef.current = { columns, rows };
 
   const configRef = useRef<Config | null>(null);
   const clientRef = useRef<LlmClient | null>(null);
@@ -390,7 +398,7 @@ export default function App() {
     try {
       await writeHandoff({
         workspace: tools.workspacePath,
-        uiMessages: history,
+        uiMessages: coalesceStreamFragments(history),
         modelContents: conversationRef.current,
         inputHistory,
       });
@@ -569,11 +577,21 @@ export default function App() {
       // transcript each frame — which is what makes a long reply flicker
       // and tear.
       const settled = countSettled(turn.messages);
+      const completed: Message[] = [];
       if (settled > 0) {
         const done = turn.messages.slice(0, settled);
         turn = { ...turn, messages: turn.messages.slice(settled) };
-        pushHistory(...done);
+        completed.push(...done);
       }
+      const size = terminalSizeRef.current;
+      const layout = liveRegionLayout(size.rows, Number.POSITIVE_INFINITY);
+      const flushed = flushStreamingForScrollback(
+        turn.messages,
+        layout.pendingRows * Math.max(1, size.columns - 4),
+      );
+      turn = { ...turn, messages: flushed.pending };
+      completed.push(...flushed.settled);
+      if (completed.length) pushHistory(...completed);
       updatePending(turn.messages);
     };
 
@@ -652,6 +670,7 @@ export default function App() {
     : modelsLoading
       ? 'Fetching models…'
       : undefined;
+  const liveLayout = liveRegionLayout(rows, estimatePendingRows(pending, columns));
 
   return (
     <Box flexDirection="column">
@@ -661,6 +680,7 @@ export default function App() {
         pending={pending}
         redrawKey={redrawKey}
         width={columns}
+        pendingHeight={liveLayout.pendingRows}
       />
       <Box marginTop={1} flexDirection="column">
         {approvalRequest ? (
@@ -690,6 +710,7 @@ export default function App() {
             disabledLabel={disabledLabel}
             onSubmit={handleSubmit}
             onInterrupt={handleInterrupt}
+            suggestionLimit={pending.length ? liveLayout.suggestionLimit : 12}
           />
         )}
         <StatusBar

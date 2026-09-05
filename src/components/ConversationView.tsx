@@ -19,6 +19,8 @@ interface Props {
   redrawKey: number;
   /** Terminal width, in columns — see the `<Static>` note below. */
   width: number;
+  /** Bounds Ink's mutable region so it never wipes native terminal scrollback. */
+  pendingHeight: number;
 }
 
 type StaticEntry = { kind: 'header'; cwd: string } | { kind: 'message'; message: Message };
@@ -44,7 +46,7 @@ type StaticEntry = { kind: 'header'; cwd: string } | { kind: 'message'; message:
  * scrambled — worst when the terminal is narrow, i.e. exactly when you zoom
  * in. Pinning the width to the real column count makes Ink do the wrapping.
  */
-export function ConversationView({ cwd, history, pending, redrawKey, width }: Props) {
+export function ConversationView({ cwd, history, pending, redrawKey, width, pendingHeight }: Props) {
   const staticEntries: StaticEntry[] = [
     { kind: 'header', cwd },
     ...history.map((message): StaticEntry => ({ kind: 'message', message })),
@@ -61,9 +63,20 @@ export function ConversationView({ cwd, history, pending, redrawKey, width }: Pr
           )
         }
       </Static>
-      {pending.map((m) => (
-        <MessageItem key={m.id} message={m} />
-      ))}
+      {pending.length ? (
+        <Box
+          flexDirection="column"
+          height={pendingHeight}
+          overflowY="hidden"
+          justifyContent="flex-end"
+        >
+          {pending.map((m) => (
+            <Box key={m.id} flexShrink={0}>
+              <MessageItem message={m} />
+            </Box>
+          ))}
+        </Box>
+      ) : null}
     </Box>
   );
 }

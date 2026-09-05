@@ -26,13 +26,15 @@ export function MessageItem({ message }: { message: Message }) {
   const dimmed = message.role === 'thought';
 
   return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Box>
-        <Text color={meta.color} bold={!dimmed} dimColor={dimmed}>
-          {meta.symbol} {meta.label}
-        </Text>
-        <Text color={theme.dim}>  {formatTime(message.timestamp)}</Text>
-      </Box>
+    <Box flexDirection="column" marginBottom={message.continues ? 0 : 1}>
+      {!message.continuation ? (
+        <Box>
+          <Text color={meta.color} bold={!dimmed} dimColor={dimmed}>
+            {meta.symbol} {meta.label}
+          </Text>
+          <Text color={theme.dim}>  {formatTime(message.timestamp)}</Text>
+        </Box>
+      ) : null}
 
       {message.tool ? <ToolCallBlock message={message} /> : null}
 
@@ -41,6 +43,7 @@ export function MessageItem({ message }: { message: Message }) {
           <Markdown
             content={message.content + (message.streaming ? '▍' : '')}
             color={dimmed ? theme.thought : undefined}
+            startsInCode={message.startsInCode}
           />
         </Box>
       ) : null}

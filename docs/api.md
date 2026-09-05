@@ -224,7 +224,8 @@ curl -X PUT http://127.0.0.1:3141/v1/files \
 ## 交互式 Sandbox Terminal
 
 交互终端不是宿主 Shell。`mai-api` 启动同一个 `mai-sandbox --terminal`，在 Linux
-bubblewrap/seccomp、无网络、workspace-only 写入边界内分配 PTY。
+bubblewrap/seccomp、workspace-only 写入边界内分配 PTY，并继承执行节点的网络，因此
+可以运行 `curl`、包管理器及其他需要联网的命令。
 
 创建终端：
 

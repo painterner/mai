@@ -112,7 +112,7 @@ function classifySimpleCommand(argv: string[]): ApprovalRequirement {
   }
 
   if (NETWORK_TOOLS.has(executable)) {
-    return review('high', 'Network or remote-access command requires review; command networking is sandboxed off');
+    return review('high', 'Network or remote-access command requires review');
   }
 
   if (executable === 'git') return classifyGit(argv);

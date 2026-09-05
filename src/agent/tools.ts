@@ -153,7 +153,7 @@ export class ToolRegistry {
       definitions.push({
         name: 'run_command',
         description:
-          'Run a shell command in a network-disabled Linux sandbox with workspace-only writes and return its exit status and output.',
+          'Run a shell command with network access in a Linux sandbox with workspace-only writes and return its exit status and output.',
         parameters: {
           type: 'object',
           required: ['command'],

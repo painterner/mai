@@ -83,7 +83,7 @@ export class McpRegistry {
     return [...this.tools.values()].map((tool) => ({
       name: tool.exposedName,
       description: `[MCP: ${tool.serverName}] ${tool.description ?? tool.originalName}`,
-      parameters: tool.inputSchema,
+      parameters: exposedInputSchema(tool),
     }));
   }
 
@@ -109,8 +109,9 @@ export class McpRegistry {
   async execute(toolName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
     const tool = this.tools.get(toolName);
     if (!tool) throw new Error(`Unknown MCP tool: ${toolName}`);
+    const normalizedArgs = normalizeMcpArguments(tool, args);
     const result = await tool.client.callTool(
-      { name: tool.originalName, arguments: args },
+      { name: tool.originalName, arguments: normalizedArgs },
       undefined,
       { signal, timeout: MCP_CALL_TIMEOUT_MS, maxTotalTimeout: MCP_CALL_TIMEOUT_MS },
     );
@@ -174,6 +175,78 @@ export class McpRegistry {
       client,
     });
   }
+}
+
+/**
+ * Some MCP servers validate values more narrowly than their generated JSON
+ * schema can express. Brave's Zod refinement, for example, is exposed to the
+ * model as a plain string, so models commonly send ISO durations such as P6M
+ * even though the API expects a shortcut or explicit date range.
+ */
+function exposedInputSchema(tool: McpTool): object {
+  if (!isBraveWebSearch(tool)) return tool.inputSchema;
+  const schema = tool.inputSchema as Record<string, unknown>;
+  const properties = schema.properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    return tool.inputSchema;
+  }
+  const freshness = (properties as Record<string, unknown>).freshness;
+  if (!freshness || typeof freshness !== 'object' || Array.isArray(freshness)) {
+    return tool.inputSchema;
+  }
+  return {
+    ...schema,
+    properties: {
+      ...(properties as Record<string, unknown>),
+      freshness: {
+        ...(freshness as Record<string, unknown>),
+        description:
+          'Optional result age: pd (day), pw (week), pm (month), py (year), ' +
+          'YYYY-MM-DDtoYYYY-MM-DD, or an ISO date duration such as P6M.',
+      },
+    },
+  };
+}
+
+function normalizeMcpArguments(
+  tool: McpTool,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isBraveWebSearch(tool) || typeof args.freshness !== 'string') return args;
+  const freshness = isoDurationToBraveFreshness(args.freshness);
+  return freshness === args.freshness ? args : { ...args, freshness };
+}
+
+function isBraveWebSearch(tool: McpTool): boolean {
+  return tool.originalName === 'web_search' &&
+    (tool.serverName === 'brave_search' || /brave/i.test(tool.description ?? ''));
+}
+
+function isoDurationToBraveFreshness(value: string, now = new Date()): string {
+  const match = /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?$/i.exec(value);
+  if (!match || !match.slice(1).some(Boolean)) return value;
+  const years = Number(match[1] ?? 0);
+  const months = Number(match[2] ?? 0);
+  const weeks = Number(match[3] ?? 0);
+  const days = Number(match[4] ?? 0);
+
+  if (years === 0 && months === 0 && weeks === 0 && days === 1) return 'pd';
+  if (years === 0 && months === 0 && ((weeks === 1 && days === 0) || (weeks === 0 && days === 7))) return 'pw';
+  if (years === 0 && months === 1 && weeks === 0 && days === 0) return 'pm';
+  if (years === 1 && months === 0 && weeks === 0 && days === 0) return 'py';
+
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const targetYear = end.getUTCFullYear() - years;
+  const targetMonth = end.getUTCMonth() - months;
+  const start = new Date(Date.UTC(targetYear, targetMonth, 1));
+  const lastDay = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate();
+  start.setUTCDate(Math.min(end.getUTCDate(), lastDay));
+  start.setUTCDate(start.getUTCDate() - weeks * 7 - days);
+  return `${formatUtcDate(start)}to${formatUtcDate(end)}`;
+}
+
+function formatUtcDate(value: Date): string {
+  return value.toISOString().slice(0, 10);
 }
 
 async function discoverMcpServers(

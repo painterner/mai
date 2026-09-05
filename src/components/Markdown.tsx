@@ -8,8 +8,12 @@ import { theme } from '../theme.js';
  * inline handling. Not a full markdown parser — just enough to make agent
  * replies (prose + snippets) read well in a terminal.
  */
-export function Markdown({ content, color }: { content: string; color?: string }) {
-  const blocks = splitCodeBlocks(content);
+export function Markdown({ content, color, startsInCode = false }: {
+  content: string;
+  color?: string;
+  startsInCode?: boolean;
+}) {
+  const blocks = splitCodeBlocks(content, startsInCode);
 
   return (
     <Box flexDirection="column">
@@ -62,10 +66,10 @@ const FENCE = /^\s*```(\w*)\s*$/;
  * purpose: while a reply is streaming in, the closing fence simply hasn't
  * arrived yet.
  */
-function splitCodeBlocks(content: string): Block[] {
+function splitCodeBlocks(content: string, startsInCode = false): Block[] {
   const blocks: Block[] = [];
   let buffer: string[] = [];
-  let inCode = false;
+  let inCode = startsInCode;
   let lang = '';
 
   const flush = () => {

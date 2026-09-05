@@ -26,4 +26,21 @@ server.registerTool(
   async () => ({ content: [{ type: 'text', text: 'collision' }] }),
 );
 
+server.registerTool(
+  'web_search',
+  {
+    description: 'Brave-compatible fixture search',
+    inputSchema: {
+      query: z.string(),
+      freshness: z.string().refine(
+        (value) => ['pd', 'pw', 'pm', 'py'].includes(value) || /^\d{4}-\d{2}-\d{2}to\d{4}-\d{2}-\d{2}$/.test(value),
+      ).optional(),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false },
+  },
+  async ({ query, freshness }) => ({
+    content: [{ type: 'text', text: `${query}:${freshness ?? 'all'}` }],
+  }),
+);
+
 await server.connect(new StdioServerTransport());

@@ -27,7 +27,7 @@ test('loads stdio MCP tools, calls them, and namespaces built-in collisions', as
     path.join(agentsDir, 'mcp.json'),
     JSON.stringify({
       mcpServers: {
-        fixture: {
+        brave_search: {
           command: process.execPath,
           args: [serverFile],
           cwd: workspace,
@@ -45,10 +45,21 @@ test('loads stdio MCP tools, calls them, and namespaces built-in collisions', as
 
   const definitions = tools.definitions();
   assert.ok(definitions.some((tool) => tool.name === 'fixture_echo'));
-  assert.ok(definitions.some((tool) => tool.name === 'fixture__read_file'));
+  assert.ok(definitions.some((tool) => tool.name === 'brave_search__read_file'));
+  const webSearch = definitions.find((tool) => tool.name === 'web_search');
+  assert.match(
+    String((webSearch?.parameters as { properties?: { freshness?: { description?: string } } })
+      .properties?.freshness?.description),
+    /P6M/,
+  );
   assert.equal(tools.approvalRequirement('fixture_echo', {}).decision, 'allow');
   assert.equal(
     await tools.execute('fixture_echo', { value: 'hello' }),
     'from-config:hello',
   );
+  assert.match(
+    await tools.execute('web_search', { query: 'recent', freshness: 'P6M' }),
+    /^recent:\d{4}-\d{2}-\d{2}to\d{4}-\d{2}-\d{2}$/,
+  );
+  assert.equal(await tools.execute('web_search', { query: 'today', freshness: 'P1D' }), 'today:pd');
 });
