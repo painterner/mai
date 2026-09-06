@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
 import type { ApprovalRequest } from '../agent/loop.js';
+import { useMaiInput } from '../hooks/useMaiInput.js';
 
 const RISK_COLOR: Record<ApprovalRequest['risk'], string> = {
   low: theme.success,
@@ -23,7 +24,7 @@ interface Props {
 export function ApprovalPrompt({ request, onAnswer }: Props) {
   const [selected, setSelected] = useState<'approve' | 'deny'>('deny');
 
-  useInput((input, key) => {
+  useMaiInput((input, key) => {
     if (key.leftArrow || key.rightArrow || key.tab) {
       setSelected((s) => (s === 'approve' ? 'deny' : 'approve'));
       return;

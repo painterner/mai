@@ -8,6 +8,10 @@ import {
   liveRegionLayout,
 } from '../src/terminal-layout.js';
 import type { Message } from '../src/types.js';
+import {
+  finalizeInterruptedMessages,
+  preserveInterruptedTranscript,
+} from '../src/interrupt.js';
 
 test('live streaming output stays below the terminal height so Ink preserves scrollback', () => {
   for (const rows of [8, 12, 24, 40]) {
@@ -55,4 +59,57 @@ test('long streaming replies commit completed prefixes to native scrollback', ()
   assert.equal(combined.length, 1);
   assert.equal(combined[0].content, content);
   assert.equal(combined[0].continuation, undefined);
+});
+
+test('Esc finalizes streaming text and running tools without dropping their output', () => {
+  const finalized = finalizeInterruptedMessages([
+    { id: 'reply', role: 'assistant', content: 'still here', streaming: true, timestamp: 0 },
+    {
+      id: 'tool',
+      role: 'tool',
+      content: '',
+      timestamp: 0,
+      tool: { name: 'run_command', args: {}, status: 'running', output: 'partial output' },
+    },
+  ]);
+
+  assert.equal(finalized[0].content, 'still here [interrupted]');
+  assert.equal(finalized[0].streaming, false);
+  assert.equal(finalized[1].tool?.status, 'failed');
+  assert.equal(finalized[1].tool?.output, 'partial output');
+});
+
+test('Esc transfers output in separate frames so it is never absent', async () => {
+  const source: Message[] = [
+    { id: 'reply', role: 'assistant', content: 'visible output', streaming: true, timestamp: 0 },
+  ];
+  let pending = source;
+  let history: Message[] = [];
+  const frames: Array<{ pending: string; history: string }> = [];
+  const capture = () => frames.push({
+    pending: pending.map((message) => message.content).join(''),
+    history: history.map((message) => message.content).join(''),
+  });
+
+  await preserveInterruptedTranscript(source, {
+    showFinalized(messages) {
+      pending = messages;
+      capture();
+    },
+    appendHistory(messages) {
+      history = [...history, ...messages];
+      capture();
+    },
+    clearPending() {
+      pending = [];
+      capture();
+    },
+  }, async () => {});
+
+  assert.deepEqual(frames.map((frame) => [Boolean(frame.pending), Boolean(frame.history)]), [
+    [true, false],
+    [true, true],
+    [false, true],
+  ]);
+  assert.ok(frames.every((frame) => frame.pending.includes('visible output') || frame.history.includes('visible output')));
 });

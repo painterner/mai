@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
 import { matchCommands, type SkillCommandDescriptor } from '../commands.js';
 import {
@@ -8,6 +8,7 @@ import {
   moveCursorVertically,
   normalizeLineBreaks,
 } from '../input-edit.js';
+import { useMaiInput } from '../hooks/useMaiInput.js';
 
 interface Props {
   history: string[];
@@ -53,7 +54,7 @@ export function InputPrompt({
   const menuVisible = suggestions.length > 0;
   const clampedMenuIndex = Math.min(menuIndex, Math.max(suggestions.length - 1, 0));
 
-  useInput((input, key) => {
+  useMaiInput((input, key) => {
     // Ctrl+C is App's — it has to keep working while this row is swapped
     // out for the approval prompt or the model picker.
     if (key.ctrl && input === 'c') return;

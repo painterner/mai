@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { spawn } from 'node:child_process';
-import { Box, useApp, useInput, useStdout } from 'ink';
+import { Box, useApp, useStdout } from 'ink';
 import { ConversationView } from './components/ConversationView.js';
 import { InputPrompt } from './components/InputPrompt.js';
 import { StatusBar } from './components/StatusBar.js';
@@ -23,6 +23,8 @@ import {
   flushStreamingForScrollback,
   liveRegionLayout,
 } from './terminal-layout.js';
+import { preserveInterruptedTranscript } from './interrupt.js';
+import { useMaiInput } from './hooks/useMaiInput.js';
 
 // Erase screen + scrollback, then home the cursor. Same sequence
 // `ansi-escapes`' clearTerminal emits on POSIX; inlined so this doesn't
@@ -72,6 +74,7 @@ export default function App() {
   const pendingProviderRef = useRef<ProviderDef | null>(null);
   const pendingDefaultModelRef = useRef('');
   const terminalSizeRef = useRef({ columns, rows });
+  const interruptTransferRef = useRef<Promise<void> | null>(null);
   terminalSizeRef.current = { columns, rows };
 
   const configRef = useRef<Config | null>(null);
@@ -223,7 +226,7 @@ export default function App() {
   // Ctrl+C lives here rather than in InputPrompt because the input row is
   // swapped out entirely while an approval or the model picker is up —
   // handling it there meant those two states had no way to quit at all.
-  useInput((input, key) => {
+  useMaiInput((input, key) => {
     if (key.ctrl && input === 'c') handleCtrlC();
   });
 
@@ -629,6 +632,11 @@ export default function App() {
     if (!cancelledRef.current) {
       pushHistory(...closeStreaming(turn.messages));
       updatePending([]);
+    } else if (interruptTransferRef.current) {
+      // Keep this queue worker alive until the interrupted tail has really
+      // reached <Static>. Otherwise the next queued turn could replace the
+      // live region while the transfer is still being painted.
+      await interruptTransferRef.current;
     }
     if (abortControllerRef.current === controller) abortControllerRef.current = null;
   }
@@ -639,21 +647,19 @@ export default function App() {
   };
 
   function handleInterrupt() {
-    if (!inputQueueRef.current?.running) return;
+    if (!inputQueueRef.current?.running || cancelledRef.current) return;
     cancelledRef.current = true;
     abortControllerRef.current?.abort();
 
-    const finalized = pendingRef.current.map((m) => {
-      if (m.streaming) {
-        return { ...m, streaming: false, content: `${m.content}${m.content ? ' ' : ''}[interrupted]` };
-      }
-      if (m.tool && (m.tool.status === 'running' || m.tool.status === 'pending_approval')) {
-        return { ...m, tool: { ...m.tool, status: 'failed' as const, output: m.tool.output ?? 'Interrupted' } };
-      }
-      return m;
+    const transfer = preserveInterruptedTranscript(pendingRef.current, {
+      showFinalized: updatePending,
+      appendHistory: (messages) => pushHistory(...messages),
+      clearPending: () => updatePending([]),
     });
-    pushHistory(...finalized);
-    updatePending([]);
+    interruptTransferRef.current = transfer;
+    void transfer.finally(() => {
+      if (interruptTransferRef.current === transfer) interruptTransferRef.current = null;
+    });
 
     if (approvalResolveRef.current) {
       const resolve = approvalResolveRef.current;

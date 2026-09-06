@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text } from 'ink';
 import { theme, symbols } from '../theme.js';
+import { useMaiInput } from '../hooks/useMaiInput.js';
 
 interface Props {
   models: string[];
@@ -23,7 +24,7 @@ const MAX_VISIBLE = 10;
 export function ModelPicker({ models, current, onSelect, onCancel, label = 'Select a model' }: Props) {
   const [index, setIndex] = useState(Math.max(0, models.indexOf(current)));
 
-  useInput((_input, key) => {
+  useMaiInput((_input, key) => {
     if (key.upArrow) {
       setIndex((i) => (i - 1 + models.length) % models.length);
       return;
