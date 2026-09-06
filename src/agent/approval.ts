@@ -86,7 +86,17 @@ const FORBIDDEN_EXECUTABLES = new Set([
 
 const NESTED_SHELLS = new Set(['sh', 'bash', 'zsh', 'fish', 'dash', 'eval', 'exec']);
 const NETWORK_TOOLS = new Set(['curl', 'wget', 'ssh', 'scp', 'sftp', 'nc', 'ncat', 'socat', 'telnet']);
-const READ_ONLY_COMMANDS = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'rg']);
+const READ_ONLY_COMMANDS = new Set([
+  'ls',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'rg',
+  'grep',
+  'egrep',
+  'fgrep',
+]);
 
 function classifySimpleCommand(argv: string[]): ApprovalRequirement {
   const executable = argv[0]?.split('/').pop() ?? '';
