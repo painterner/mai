@@ -1,8 +1,10 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, useStdout } from 'ink';
 import { theme, symbols } from '../theme.js';
 import type { Message, ToolStatus } from '../types.js';
 import { Markdown } from './Markdown.js';
+import { commandExitCode, layoutToolOutputRows, type ToolOutputCell } from '../tool-output-layout.js';
+import { classifyLsEntry, resolveLsBaseDirectory, type LsEntryKind } from '../ls-entry-style.js';
 
 const ROLE_META: Record<Message['role'], { symbol: string; color: string; label: string }> = {
   user: { symbol: symbols.user, color: theme.user, label: 'you' },
@@ -53,7 +55,11 @@ export function MessageItem({ message }: { message: Message }) {
 
 function ToolCallBlock({ message }: { message: Message }) {
   const tool = message.tool!;
-  const status = TOOL_STATUS_META[tool.status];
+  const exitCode = tool.name === 'run_command' && tool.output ? commandExitCode(tool.output) : null;
+  const effectiveStatus = tool.status === 'done' && exitCode !== null && exitCode !== 0
+    ? 'failed'
+    : tool.status;
+  const status = TOOL_STATUS_META[effectiveStatus];
 
   return (
     <Box paddingLeft={2} flexDirection="column" marginBottom={message.content ? 1 : 0}>
@@ -62,7 +68,7 @@ function ToolCallBlock({ message }: { message: Message }) {
         {tool.args ? <Text color={theme.dim}>  ({tool.args})</Text> : null}
         <Text color={status.color}>  [{status.label}]</Text>
       </Text>
-      {tool.output ? <ToolOutput output={tool.output} /> : null}
+      {tool.output ? <ToolOutput name={tool.name} args={tool.args} output={tool.output} /> : null}
     </Box>
   );
 }
@@ -76,17 +82,29 @@ function ToolCallBlock({ message }: { message: Message }) {
 const MAX_OUTPUT_LINES = 20;
 const MAX_OUTPUT_LINE_CHARS = 300;
 
-function ToolOutput({ output }: { output: string }) {
-  const lines = output.split('\n');
-  const shown = lines.slice(0, MAX_OUTPUT_LINES);
-  const hidden = lines.length - shown.length;
+function ToolOutput({ name, args, output }: { name: string; args?: string; output: string }) {
+  const { stdout } = useStdout();
+  // Account for the message indentation, box border and horizontal padding.
+  const width = Math.max(10, (stdout?.columns ?? 80) - 8);
+  const rows = layoutToolOutputRows({ toolName: name, args, output, width });
+  const shown = rows.slice(0, MAX_OUTPUT_LINES);
+  const hidden = rows.length - shown.length;
+  const lsBaseDirectory = resolveLsBaseDirectory(args, process.cwd());
+
+  if (!rows.length) return null;
 
   return (
     <Box borderStyle="round" borderColor={theme.border} paddingX={1} flexDirection="column" marginTop={0}>
-      {shown.map((line, i) => (
-        <Text key={i} color={theme.dim}>
-          {clip(line) || ' '}
-        </Text>
+      {shown.map((row, i) => (
+        row.cells ? (
+          <Box key={i} flexDirection="row">{row.cells.map((cell, cellIndex) => (
+            <LsCell key={`${cell.value}-${cellIndex}`} cell={cell} baseDirectory={lsBaseDirectory} />
+          ))}</Box>
+        ) : (
+          <Text key={i} color={row.tone === 'error' ? theme.error : theme.dim}>
+            {clip(row.text) || ' '}
+          </Text>
+        )
       ))}
       {hidden > 0 ? (
         <Text color={theme.dim} dimColor>
@@ -95,6 +113,29 @@ function ToolOutput({ output }: { output: string }) {
       ) : null}
     </Box>
   );
+}
+
+function LsCell({ cell, baseDirectory }: { cell: ToolOutputCell; baseDirectory: string | null }) {
+  const kind = classifyLsEntry(baseDirectory, cell.value);
+  return (
+    <Box width={cell.width} flexShrink={0}>
+      <Text color={lsColor(kind)} bold={kind === 'directory' || kind === 'executable'}>
+        {cell.value}
+      </Text>
+    </Box>
+  );
+}
+
+function lsColor(kind: LsEntryKind): string {
+  switch (kind) {
+    case 'directory': return '#60A5FA';
+    case 'executable': return theme.success;
+    case 'symlink': return theme.user;
+    case 'archive': return theme.error;
+    case 'image': return '#C084FC';
+    case 'media': return '#F472B6';
+    case 'file': return theme.dim;
+  }
 }
 
 function clip(line: string): string {

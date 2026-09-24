@@ -7,6 +7,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     name: '/model',
     description: 'Pick interactively, or use /model <model> [provider] for direct switching',
   },
+  { name: '/approval', description: 'Set tool mode: auto, safe, or manual' },
   { name: '/tools', description: 'List the tools currently available to the model' },
   {
     name: '/skills',
@@ -34,6 +35,16 @@ export function matchCommands(
   input: string,
   skills: SkillCommandDescriptor[] = [],
 ): SlashCommand[] {
+  const approvalArgument = input.match(/^\/approval\s+([^\s]*)$/i);
+  if (approvalArgument) {
+    const query = approvalArgument[1].toLowerCase();
+    return [
+      { name: '/approval auto', description: 'Run all tool calls without approval prompts' },
+      { name: '/approval safe', description: 'Use risk rules and ask for review-classified calls' },
+      { name: '/approval manual', description: 'Ask before every non-forbidden tool call' },
+    ].filter((command) => command.name.slice('/approval '.length).startsWith(query));
+  }
+
   const skillArgument = input.match(/^\/skills\s+([^\s]*)$/i);
   if (skillArgument) {
     const q = skillArgument[1].toLowerCase();
@@ -83,4 +94,18 @@ export function parseModelCommandArgs(args: string[]): ModelCommandRequest {
 export function matchIdentifier(available: string[], requested: string): string | undefined {
   return available.find((value) => value === requested)
     ?? available.find((value) => value.toLowerCase() === requested.toLowerCase());
+}
+
+export type ApprovalCommandRequest =
+  | { kind: 'show' }
+  | { kind: 'set'; mode: 'auto' | 'safe' | 'manual' }
+  | { kind: 'error'; message: string };
+
+export function parseApprovalCommandArgs(args: string[]): ApprovalCommandRequest {
+  if (args.length === 0) return { kind: 'show' };
+  const mode = args[0]?.toLowerCase();
+  if (args.length === 1 && (mode === 'auto' || mode === 'safe' || mode === 'manual')) {
+    return { kind: 'set', mode };
+  }
+  return { kind: 'error', message: 'Usage: /approval [auto|safe|manual]' };
 }

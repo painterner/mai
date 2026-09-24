@@ -1,4 +1,4 @@
-import type { RiskLevel } from './approval.js';
+import { approvalAction, type ApprovalMode, type RiskLevel } from './approval.js';
 import type { ToolRegistry } from './tools.js';
 import type { Content, FunctionCall, LlmClient, Part } from '../llm/types.js';
 
@@ -31,7 +31,9 @@ export interface AgentLoopDeps {
   client: LlmClient;
   tools: ToolRegistry;
   systemInstruction: string;
-  /** Resolves to true if the user approves a review-gated tool call. */
+  /** auto executes everything; safe follows rules; manual asks for every non-forbidden call. */
+  approvalMode?: ApprovalMode;
+  /** Resolves to true if the user approves a tool call gated by the selected mode. */
   requestApproval: (request: ApprovalRequest) => Promise<boolean>;
   /** Lets the caller cancel an in-flight model request (e.g. Esc to interrupt). */
   signal?: AbortSignal;
@@ -96,7 +98,9 @@ export async function* runAgentTurn(
       const args = (call.args ?? {}) as Record<string, unknown>;
       const requirement = deps.tools.approvalRequirement(call.name, args);
 
-      if (requirement.decision === 'forbidden') {
+      const action = approvalAction(deps.approvalMode ?? 'auto', requirement);
+
+      if (action === 'decline') {
         yield { type: 'toolFinished', id, name: call.name, output: requirement.reason, status: 'declined' };
         responseParts.push({
           functionResponse: { name: call.name, response: { error: `Forbidden: ${requirement.reason}` } },
@@ -104,7 +108,7 @@ export async function* runAgentTurn(
         continue;
       }
 
-      if (requirement.decision === 'review') {
+      if (action === 'prompt') {
         yield {
           type: 'toolApprovalNeeded',
           id,
@@ -159,7 +163,16 @@ export async function* runAgentTurn(
  * than a `Skill[]` so this module doesn't need to import skills.ts just to
  * re-derive text it's handed either way.
  */
-export function buildSystemInstruction(workspace: string, skillCatalog = ''): string {
+export function buildSystemInstruction(
+  workspace: string,
+  skillCatalog = '',
+  approvalMode: ApprovalMode = 'auto',
+): string {
+  const approvalGuidance = approvalMode === 'auto'
+    ? 'Tool calls execute without an approval prompt in auto mode. The available tool implementations and sandbox still define the execution boundary.'
+    : approvalMode === 'manual'
+      ? 'Every non-forbidden tool call requires user approval in manual mode. If one is declined, adapt instead of immediately retrying the same call.'
+      : 'In safe mode, calls classified as risky require user approval and forbidden calls are declined. If one is declined, adapt instead of immediately retrying the same call.';
   const lines = [
     'You are Mai, an autonomous coding agent working inside this workspace:',
     '',
@@ -170,10 +183,8 @@ export function buildSystemInstruction(workspace: string, skillCatalog = ''): st
       'workspace-only. Make focused changes, preserve existing conventions, and verify completed ' +
       'work with the available tools when you can. Never reveal secrets or environment variables.',
     '',
-    'Call tools one at a time and base each next action on the previous result. Some tool ' +
-      'calls (destructive or risky shell commands, for example) require the user to approve ' +
-      'them before they run and may be declined — if one is declined, adapt instead of retrying ' +
-      'the same call. Do not claim a change or verification that was not actually performed. ' +
+    'Call tools one at a time and base each next action on the previous result. ' +
+      `${approvalGuidance} Do not claim a change or verification that was not actually performed. ` +
       'When the task is complete, reply with a concise plain-text summary and no further tool calls.',
   ];
 

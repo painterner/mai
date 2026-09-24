@@ -41,7 +41,7 @@ ENV NODE_ENV=production \
     MAI_API_PORT=3141 \
     MAI_API_ALLOW_WRITE=true \
     MAI_API_ALLOW_SHELL=true \
-    MAI_API_APPROVE_RISKY=true
+    MAI_API_APPROVAL_MODE=auto
 
 USER mai
 WORKDIR /workspace

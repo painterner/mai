@@ -4,6 +4,7 @@ import { loadConfig, configForProvider, saveState, type Config } from './config.
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
 import { ToolRegistry } from './agent/tools.js';
 import { runAgentTurn, buildSystemInstruction, type AgentEvent, type ApprovalRequest } from './agent/loop.js';
+import type { ApprovalMode } from './agent/approval.js';
 import { readAndClearHandoff, writeHandoff } from './handoff.js';
 import type { Message } from './types.js';
 import { SerialQueue } from './serial-queue.js';
@@ -29,7 +30,8 @@ type InCommand =
   | { type: 'handoff'; uiMessages: Message[] }
   | { type: 'listProviders' }
   | { type: 'listModels'; provider: string }
-  | { type: 'setModel'; provider: string; model: string };
+  | { type: 'setModel'; provider: string; model: string }
+  | { type: 'setApprovalMode'; mode: ApprovalMode };
 
 type OutEvent =
   | {
@@ -40,6 +42,7 @@ type OutEvent =
       baseUrl: string;
       hasApiKey: boolean;
       sandbox: string | null;
+      approvalMode: ApprovalMode;
       resumedMessages: Message[];
       mcpIssues: Array<{ server: string; message: string }>;
     }
@@ -50,6 +53,7 @@ type OutEvent =
   | { type: 'modelsListed'; models: string[]; current: string }
   | { type: 'modelsError'; message: string }
   | { type: 'modelChanged'; provider: string; model: string; baseUrl: string }
+  | { type: 'approvalModeChanged'; mode: ApprovalMode }
   | { type: 'queueChanged'; waiting: number }
   | { type: 'turnStarted'; text: string }
   | AgentEvent;
@@ -62,6 +66,7 @@ let client: LlmClient;
 let config: Config;
 let tools: ToolRegistry;
 let systemInstruction = '';
+let approvalMode: ApprovalMode = 'auto';
 let conversation: Content[] = [];
 let pendingApprovalResolve: ((approved: boolean) => void) | null = null;
 let currentAbort: AbortController | null = null;
@@ -106,7 +111,7 @@ async function runTurn(userText: string) {
 
   try {
     const generator = runAgentTurn(
-      { client, tools, systemInstruction, requestApproval, signal: controller.signal },
+      { client, tools, systemInstruction, approvalMode, requestApproval, signal: controller.signal },
       conversation,
       userText,
     );
@@ -133,7 +138,7 @@ async function init() {
     { write: true, shell: config.allowShell },
     config.sandboxBinary,
   );
-  systemInstruction = buildSystemInstruction(tools.workspacePath, tools.skillCatalog);
+  systemInstruction = buildSystemInstruction(tools.workspacePath, tools.skillCatalog, approvalMode);
 
   let resumedMessages: Message[] = [];
   const handoff = await readAndClearHandoff(tools.workspacePath).catch(() => null);
@@ -150,6 +155,7 @@ async function init() {
     baseUrl: config.baseUrl,
     hasApiKey: Boolean(config.apiKey),
     sandbox: config.sandboxBinary,
+    approvalMode,
     resumedMessages,
     mcpIssues: tools.mcpIssues,
   });
@@ -241,6 +247,19 @@ async function init() {
         emit({ type: 'modelChanged', provider: config.provider, model: config.model, baseUrl: config.baseUrl });
         break;
       }
+      case 'setApprovalMode':
+        if (busy) {
+          emit({ type: 'error', message: 'Finish or interrupt the current turn before changing approval mode.' });
+          break;
+        }
+        if (!['auto', 'safe', 'manual'].includes(cmd.mode)) {
+          emit({ type: 'error', message: `Unknown approval mode "${String(cmd.mode)}".` });
+          break;
+        }
+        approvalMode = cmd.mode;
+        systemInstruction = buildSystemInstruction(tools.workspacePath, tools.skillCatalog, approvalMode);
+        emit({ type: 'approvalModeChanged', mode: approvalMode });
+        break;
     }
   });
   let closing = false;

@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { buildSystemInstruction, runAgentTurn, type AgentEvent } from './agent/loop.js';
 import { ToolRegistry } from './agent/tools.js';
+import type { ApprovalMode } from './agent/approval.js';
 import { configForProvider, loadConfig, type Config } from './config.js';
 import { createLlmClient, type Content, type LlmClient, type Part } from './llm/index.js';
 import { FileInputError, FileNotFoundError, FileTooLargeError, WorkspaceFiles } from './api/files.js';
@@ -31,7 +32,7 @@ export interface ApiOptions {
   apiKey: string;
   allowWrite: boolean;
   allowShell: boolean;
-  approveRisky: boolean;
+  approvalMode: ApprovalMode;
   stateFile: string;
 }
 
@@ -98,7 +99,7 @@ export async function createApiServer(
     workspace: tools.workspacePath,
     allowWrite: options.allowWrite,
     allowShell: options.allowShell && config.allowShell,
-    approveRisky: options.approveRisky,
+    approvalMode: options.approvalMode,
     sandboxBinary: config.sandboxBinary,
     selectConfig: (provider, model) => selectConfig(config, provider, model),
     createClient: clientFactory,
@@ -148,7 +149,8 @@ async function handleRequest(context: ApiContext, req: IncomingMessage, res: Ser
       permissions: {
         write: context.options.allowWrite,
         shell: context.options.allowShell && context.config.allowShell,
-        approveRisky: context.options.approveRisky,
+        approvalMode: context.options.approvalMode,
+        approveRisky: context.options.approvalMode === 'auto',
       },
     });
     return;
@@ -355,8 +357,14 @@ async function handleLegacyChat(context: ApiContext, input: ChatRequest,
   const tools = await freshTools(context);
   const generator = runAgentTurn({
     client: context.createClient(requestConfig), tools,
-    systemInstruction: buildSystemInstruction(tools.workspacePath, tools.skillCatalog),
-    requestApproval: async () => context.options.approveRisky, signal: controller.signal,
+    systemInstruction: buildSystemInstruction(
+      tools.workspacePath,
+      tools.skillCatalog,
+      context.options.approvalMode,
+    ),
+    approvalMode: context.options.approvalMode,
+    // The compatibility endpoint cannot be resumed to answer a prompt.
+    requestApproval: async () => false, signal: controller.signal,
   }, input.history, input.message);
   const events: AgentEvent[] = [];
   let assistantMessage = '';
@@ -601,11 +609,28 @@ function loadApiOptions(workspace: string, stateFile?: string): ApiOptions {
   const configuredState = process.env.MAI_API_STATE?.trim();
   return { host, port, apiKey: process.env.MAI_API_KEY ?? '',
     allowWrite: envFlag('MAI_API_ALLOW_WRITE', false), allowShell: envFlag('MAI_API_ALLOW_SHELL', false),
-    approveRisky: envFlag('MAI_API_APPROVE_RISKY', false),
+    approvalMode: resolveApiApprovalMode(),
     stateFile: stateFile ?? configuredState ?? path.join(workspace, '.mai', 'api.sqlite') };
 }
+export function resolveApiApprovalMode(environment: NodeJS.ProcessEnv = process.env): ApprovalMode {
+  const configured = environment.MAI_API_APPROVAL_MODE?.trim().toLowerCase();
+  if (configured) {
+    if (configured === 'auto' || configured === 'safe' || configured === 'manual') return configured;
+    throw new Error('MAI_API_APPROVAL_MODE must be auto, safe, or manual.');
+  }
+
+  // Backward compatibility: the old false setting meant "wait for risky
+  // approvals", which is the new safe mode. With neither variable set,
+  // the new product-wide default is auto.
+  if (environment.MAI_API_APPROVE_RISKY !== undefined) {
+    return envFlagValue(environment.MAI_API_APPROVE_RISKY, false) ? 'auto' : 'safe';
+  }
+  return 'auto';
+}
 function envFlag(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
+  return envFlagValue(process.env[name], fallback);
+}
+function envFlagValue(raw: string | undefined, fallback: boolean): boolean {
   return raw === undefined ? fallback : !['0', 'false', 'no', 'off'].includes(raw.toLowerCase());
 }
 function isLoopbackHost(host: string): boolean {

@@ -24,7 +24,7 @@ services:
       MAI_API_PORT: 3141
       MAI_API_ALLOW_WRITE: "true"
       MAI_API_ALLOW_SHELL: "true"
-      MAI_API_APPROVE_RISKY: "true"
+      MAI_API_APPROVAL_MODE: "auto"
       MAI_ALLOW_SHELL: "true"
     ports:
       - "127.0.0.1:${MAI_API_PUBLISHED_PORT:-3141}:3141"

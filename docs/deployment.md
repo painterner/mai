@@ -141,8 +141,10 @@ MAI_API_PORT=3141
 MAI_API_KEY=long-random-token
 ```
 
-Desktop API 默认开启写文件和 Shell 工具。需要自动批准规则引擎标记为 review 的命令时，
-再显式设置 `MAI_API_APPROVE_RISKY=true`。规则引擎判定为 `forbidden` 的命令无法绕过。
+Desktop 的本地 GUI agent 和内置 API 都默认开启写文件、Shell 工具并使用 `auto`：工具
+调用不弹审批框，包括规则引擎原本标记为 review 或 forbidden 的调用；实际能力边界仍由
+工具实现和 sandbox 决定。GUI 顶栏切换只作用于 GUI agent；内置 API 可在启动前用
+`MAI_API_APPROVAL_MODE=safe|manual` 修改。
 
 ### Workspace
 
@@ -204,19 +206,20 @@ Docker 版没有关闭 Shell，也不是只读模式。Compose 明确启用：
 ```text
 MAI_API_ALLOW_WRITE=true
 MAI_API_ALLOW_SHELL=true
-MAI_API_APPROVE_RISKY=true
+MAI_API_APPROVAL_MODE=auto
 MAI_ALLOW_SHELL=true
 ```
 
-模型可以读写 workspace、在 `mai-sandbox` 中执行命令、执行规则引擎允许或标记为
-review 的命令，并使用镜像内的 Node/npm、Rust/Cargo、Git 和 ripgrep 工具链。
-永久 forbidden 的命令仍会被规则引擎拒绝。
+模型可以读写 workspace、在 `mai-sandbox` 中执行命令，并使用镜像内的 Node/npm、
+Rust/Cargo、Git 和 ripgrep 工具链。默认 `auto` 不经过审批规则拦截；sandbox 的文件、
+进程和系统调用边界仍然生效。
 
 API 是持久 Agent Gateway，不只是 `/v1/chat`：容器可以管理 Session/Run、SSE 事件、
 skills/tools、直接文件读取以及交互式 sandbox PTY。数据库默认位于
 `/workspace/.mai/api.sqlite`，因此与文件修改一起通过 bind mount 持久化。Compose 默认
-`MAI_API_APPROVE_RISKY=true` 以适合无人值守测试；要由远程客户端逐项审批，改为 `false`
-并调用 `/v1/runs/{id}/approval`。
+`MAI_API_APPROVAL_MODE=auto` 适合无人值守测试；要按旧风险规则审批，改为 `safe`；要让
+远程客户端逐项审批所有非 forbidden 工具，改为 `manual`，并调用
+`/v1/runs/{id}/approval`。
 
 Shell 内部仍使用 bubblewrap namespaces、只读容器根目录、仅 `/workspace` 和 `/tmp`
 可写以及 Mai seccomp BPF 过滤器。命令继承其执行节点的网络：本地/Desktop 使用宿主

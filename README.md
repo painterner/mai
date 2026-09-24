@@ -8,9 +8,10 @@ vLLM/Ollama server, ...) — with native function calling, can inspect readable
 system paths while keeping file writes inside the current workspace, and runs
 shell commands through a **Rust
 sidecar** that sandboxes them (bubblewrap + a hand-built seccomp filter —
-see [`../mail-cli-rust`](../mail-cli-rust)). Risky or destructive actions
-pause for interactive approval before they run. Sandboxed commands inherit
-the execution node's network, so approved `curl`, Git, and package-manager
+see [`../mail-cli-rust`](../mail-cli-rust)). Tool approval defaults to `auto`,
+which runs tool calls without prompts; `/approval safe` enables risk-based
+approval and `/approval manual` asks before every non-forbidden tool. Sandboxed commands inherit
+the execution node's network, so `curl`, Git, and package-manager
 operations can access the internet.
 
 ## Setup
@@ -67,6 +68,14 @@ npm run dev     # tsx, no build step
 npm run build && npm start
 ```
 
+The input stays active while Mai is responding. Normal submissions are queued
+as later model turns. Press `Ctrl+X` to switch the composer between Prompt and
+Shell mode; Shell submissions run immediately through `mai-sandbox`, in order,
+without waiting for the active model turn. Press `Ctrl+X` again (or `Esc`) to
+return to Prompt mode. From Prompt mode, `!command` runs one shell command
+without switching modes. Completed command output is displayed in the
+transcript and supplied as context to the next model turn.
+
 ## HTTP API
 
 Mai also has a persistent Agent Gateway backed by the same provider clients,
@@ -83,8 +92,8 @@ It listens on `127.0.0.1:3141` by default. The primary API provides durable
 sessions and asynchronous runs, resumable SSE events, remote approvals,
 steering/cancellation, skills/tools discovery, direct workspace files, and
 interactive sandbox PTYs. State is stored in `.mai/api.sqlite`; the old
-stateless `POST /v1/chat` remains compatible. API file writes, shell execution,
-and automatic approval of review-gated commands are disabled by default. See
+stateless `POST /v1/chat` remains compatible. API file writes and shell execution
+are disabled by default; approval mode defaults to `auto`. See
 [`docs/api.md`](docs/api.md) for request/response formats, authentication,
 configuration, streaming events, conversation history, and security notes.
 
@@ -112,7 +121,9 @@ cross-platform release CI, signing, and the platform support matrix.
    engine** ported line-for-line from `mail-cli-rust`'s
    `agent/approval.rs` (`src/agent/approval.ts`): auto-allow, pause for
    review, or forbid outright (e.g. `rm -rf /`, touching `.ssh`/`.env`,
-   `sudo`).
+   `sudo`). `safe` follows that classification, `manual` asks for each
+   non-forbidden call, and the default `auto` bypasses approval classification.
+   All modes still execute through the configured tool and sandbox boundaries.
 3. `run_command` calls are handed to the `mai-sandbox` sidecar
    (`src/sandbox/sidecar.ts`): one JSON request over stdin, one JSON
    response over stdout. All the OS-level sandboxing (bubblewrap
@@ -171,9 +182,9 @@ same-named global entries):
 ```
 
 Environment placeholders are resolved by the Mai host and are never added
-to model prompts or tool descriptions. MCP tools marked read-only are
-auto-approved; tools that may mutate external state use the existing human
-approval flow. Built-in tool names win collisions, with the MCP tool exposed
+to model prompts or tool descriptions. MCP tool risk metadata participates in
+`safe` and `manual` approval behavior; `auto` executes MCP tools without
+prompting. Built-in tool names win collisions, with the MCP tool exposed
 as `<server>__<tool>` instead.
 
 ## Switching to the GUI

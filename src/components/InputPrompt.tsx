@@ -9,6 +9,7 @@ import {
   normalizeLineBreaks,
 } from '../input-edit.js';
 import { useMaiInput } from '../hooks/useMaiInput.js';
+import { toggleInputMode, type InputMode } from '../input-mode.js';
 
 interface Props {
   history: string[];
@@ -17,6 +18,9 @@ interface Props {
   /** The model is working, but input remains enabled so submissions can queue. */
   busy?: boolean;
   queuedCount?: number;
+  shellCommandCount?: number;
+  inputMode: InputMode;
+  onInputModeChange: (mode: InputMode) => void;
   /** Placeholder shown while disabled. */
   disabledLabel?: string;
   onSubmit: (value: string) => void;
@@ -35,6 +39,9 @@ export function InputPrompt({
   disabled,
   busy,
   queuedCount = 0,
+  shellCommandCount = 0,
+  inputMode,
+  onInputModeChange,
   disabledLabel,
   onSubmit,
   onInterrupt,
@@ -48,7 +55,7 @@ export function InputPrompt({
 
   // Keep the live region bounded when `/` matches a large personal skill
   // library. Typing another character narrows the list immediately.
-  const suggestions = value.startsWith('/') && value.length > 0
+  const suggestions = inputMode === 'prompt' && value.startsWith('/') && value.length > 0
     ? matchCommands(value, skills).slice(0, Math.max(0, suggestionLimit))
     : [];
   const menuVisible = suggestions.length > 0;
@@ -61,6 +68,12 @@ export function InputPrompt({
 
     if (disabled) {
       if (key.escape) onInterrupt?.();
+      return;
+    }
+
+    if (key.ctrl && input === 'x') {
+      onInputModeChange(toggleInputMode(inputMode));
+      setMenuIndex(0);
       return;
     }
 
@@ -116,7 +129,11 @@ export function InputPrompt({
     }
 
     if (key.escape) {
-      if (busy) onInterrupt?.();
+      if (inputMode === 'shell') {
+        onInputModeChange('prompt');
+      } else if (busy) {
+        onInterrupt?.();
+      }
       setValueAndCursor('');
       setHistoryIndex(null);
       return;
@@ -210,11 +227,11 @@ export function InputPrompt({
     <Box flexDirection="column">
       <Box
         borderStyle="round"
-        borderColor={disabled ? theme.border : theme.borderFocus}
+        borderColor={disabled ? theme.border : inputMode === 'shell' ? theme.tool : theme.borderFocus}
         paddingX={1}
       >
-        <Text color={theme.user} bold>
-          {'❯ '}
+        <Text color={inputMode === 'shell' ? theme.tool : theme.user} bold>
+          {inputMode === 'shell' ? '$ ' : '❯ '}
         </Text>
         {value.length === 0 ? (
           <>
@@ -222,9 +239,11 @@ export function InputPrompt({
             <Text color={theme.dim}>
               {disabled
                 ? (disabledLabel ?? 'Input is temporarily unavailable…')
-                : busy
-                  ? `Mai is responding — Enter queues a message${queuedCount ? ` (${queuedCount} queued)` : ''} · Esc interrupts`
-                  : 'Ask Mai anything, or try /help…'}
+                : inputMode === 'shell'
+                  ? `Shell command — runs now in mai-sandbox${shellCommandCount ? ` · ${shellCommandCount} active/queued` : ''} · Ctrl+X returns to prompt`
+                  : busy
+                    ? `Mai is responding — Enter queues a message${queuedCount ? ` (${queuedCount} queued)` : ''} · Ctrl+X shell · Esc interrupts`
+                    : 'Ask Mai anything, ! for one shell command, or Ctrl+X for shell mode…'}
             </Text>
           </>
         ) : (

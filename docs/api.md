@@ -31,7 +31,8 @@ Authorization: Bearer long-random-token
 | `MAI_API_STATE` | `<workspace>/.mai/api.sqlite` | Session、Run、事件和终端 scrollback SQLite 文件 |
 | `MAI_API_ALLOW_WRITE` | `false` | 开放 agent 和文件 API 写入 |
 | `MAI_API_ALLOW_SHELL` | `false` | 开放 `run_command` 和交互终端 |
-| `MAI_API_APPROVE_RISKY` | `false` | `true` 自动批准 review；`false` 等待审批接口 |
+| `MAI_API_APPROVAL_MODE` | `auto` | `auto` 全部直接执行；`safe` 按风险规则审批；`manual` 每个非 forbidden 工具都审批 |
+| `MAI_API_APPROVE_RISKY` | 未设置 | 旧版兼容项：`true` 映射为 `auto`，`false` 映射为 `safe`；新部署请使用上一项 |
 | `MAI_ALLOW_SHELL` | `true` | CLI/API 共用的 Shell 总开关 |
 
 SQLite 保存会话历史、运行状态和全部事件。文件内容直接保存在 workspace；Docker 模式
@@ -126,8 +127,8 @@ GET /v1/runs/{id}/events?after=3
 
 ### 4. 审批、steer 和停止
 
-`MAI_API_APPROVE_RISKY=false` 时，review 级工具会令 Run 进入
-`waiting_approval`，并产生 `run.waiting_approval` 事件：
+`MAI_API_APPROVAL_MODE=safe` 时，review 级工具会等待审批；`manual` 时每个非 forbidden
+工具都会等待审批。Run 会进入 `waiting_approval` 并产生 `run.waiting_approval` 事件：
 
 ```bash
 curl -X POST http://127.0.0.1:3141/v1/runs/$RUN_ID/approval \

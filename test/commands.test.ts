@@ -1,7 +1,24 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { matchCommands, matchIdentifier, parseModelCommandArgs } from '../src/commands.js';
+import { matchCommands, matchIdentifier, parseApprovalCommandArgs, parseModelCommandArgs } from '../src/commands.js';
+
+test('approval command supports all three modes and reports invalid input', () => {
+  assert.deepEqual(parseApprovalCommandArgs([]), { kind: 'show' });
+  assert.deepEqual(parseApprovalCommandArgs(['AUTO']), { kind: 'set', mode: 'auto' });
+  assert.deepEqual(parseApprovalCommandArgs(['safe']), { kind: 'set', mode: 'safe' });
+  assert.deepEqual(parseApprovalCommandArgs(['manual']), { kind: 'set', mode: 'manual' });
+  assert.deepEqual(parseApprovalCommandArgs(['unsafe']), {
+    kind: 'error',
+    message: 'Usage: /approval [auto|safe|manual]',
+  });
+});
+
+test('approval modes are available through slash completion', () => {
+  assert.deepEqual(matchCommands('/approval s'), [
+    { name: '/approval safe', description: 'Use risk rules and ask for review-classified calls' },
+  ]);
+});
 
 test('model command keeps the no-argument interactive picker', () => {
   assert.deepEqual(parseModelCommandArgs([]), { kind: 'picker' });

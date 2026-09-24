@@ -6,11 +6,12 @@ import { InputPrompt } from './components/InputPrompt.js';
 import { StatusBar } from './components/StatusBar.js';
 import { ApprovalPrompt } from './components/ApprovalPrompt.js';
 import { ModelPicker } from './components/ModelPicker.js';
-import { SLASH_COMMANDS, matchIdentifier, parseModelCommandArgs } from './commands.js';
+import { SLASH_COMMANDS, matchIdentifier, parseApprovalCommandArgs, parseModelCommandArgs } from './commands.js';
 import { loadConfig, resolveGuiBinary, configForProvider, saveState, type Config, type ProviderDef } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
 import { ToolRegistry, type Skill } from './agent/tools.js';
 import { runAgentTurn, buildSystemInstruction, type AgentEvent, type ApprovalRequest } from './agent/loop.js';
+import type { ApprovalMode } from './agent/approval.js';
 import { applyAgentEvent, closeStreaming, createTurnState } from './agent/reducer.js';
 import { readAndClearHandoff, writeHandoff } from './handoff.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
@@ -25,6 +26,11 @@ import {
 } from './terminal-layout.js';
 import { preserveInterruptedTranscript } from './interrupt.js';
 import { useMaiInput } from './hooks/useMaiInput.js';
+import {
+  formatShellResultForModel,
+  shellCommandFromInput,
+  type InputMode,
+} from './input-mode.js';
 
 // Erase screen + scrollback, then home the cursor. Same sequence
 // `ansi-escapes`' clearTerminal emits on POSIX; inlined so this doesn't
@@ -49,8 +55,9 @@ export default function App() {
       role: 'system',
       content:
         'Welcome to Mai — a coding agent that can read/search/write files in this workspace ' +
-        'and run shell commands through a Rust-sandboxed sidecar. Risky actions pause for your ' +
-        'approval first. Try /help to see commands.',
+        'and run shell commands through a Rust-sandboxed sidecar. Tool approval defaults to ' +
+        'auto (execute without prompts); use /approval safe or /approval manual to tighten it. ' +
+        'Press Ctrl+X for concurrent shell input, or try /help.',
       timestamp: Date.now(),
     },
   ]);
@@ -58,9 +65,12 @@ export default function App() {
   const [inputHistory, setInputHistory] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [queuedCount, setQueuedCount] = useState(0);
+  const [shellCommandCount, setShellCommandCount] = useState(0);
+  const [inputMode, setInputMode] = useState<InputMode>('prompt');
   const [ready, setReady] = useState(false);
   const [exitArmed, setExitArmed] = useState(false);
   const [approvalRequest, setApprovalRequest] = useState<ApprovalRequest | null>(null);
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>('auto');
   const [pickerStage, setPickerStage] = useState<'provider' | 'model' | null>(null);
   const [pickerOptions, setPickerOptions] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -75,12 +85,17 @@ export default function App() {
   const pendingDefaultModelRef = useRef('');
   const terminalSizeRef = useRef({ columns, rows });
   const interruptTransferRef = useRef<Promise<void> | null>(null);
+  const shellCommandTailRef = useRef<Promise<void>>(Promise.resolve());
+  const shellCommandContextRef = useRef<string[]>([]);
+  const shellAbortControllersRef = useRef(new Set<AbortController>());
+  const shellEpochRef = useRef(0);
   terminalSizeRef.current = { columns, rows };
 
   const configRef = useRef<Config | null>(null);
   const clientRef = useRef<LlmClient | null>(null);
   const toolsRef = useRef<ToolRegistry | null>(null);
   const systemInstructionRef = useRef('');
+  const approvalModeRef = useRef<ApprovalMode>('auto');
   const conversationRef = useRef<Content[]>([]);
   const queuedInputWorkerRef = useRef<(turn: QueuedTurn) => Promise<void>>(async () => {});
   const inputQueueRef = useRef<SerialQueue<QueuedTurn> | null>(null);
@@ -109,7 +124,11 @@ export default function App() {
         );
         if (cancelled) return;
         toolsRef.current = registry;
-        systemInstructionRef.current = buildSystemInstruction(registry.workspacePath, registry.skillCatalog);
+        systemInstructionRef.current = buildSystemInstruction(
+          registry.workspacePath,
+          registry.skillCatalog,
+          approvalModeRef.current,
+        );
         for (const issue of registry.mcpIssues) {
           pushError(`MCP server "${issue.server}" is unavailable: ${issue.message}`);
         }
@@ -143,6 +162,7 @@ export default function App() {
     () => () => {
       if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
       abortControllerRef.current?.abort();
+      for (const controller of shellAbortControllersRef.current) controller.abort();
       void toolsRef.current?.close();
     },
     [],
@@ -235,12 +255,64 @@ export default function App() {
     if (!value) return;
     setInputHistory((h) => [...h, value]);
 
+    const shellCommand = shellCommandFromInput(value, inputMode);
+    if (shellCommand) {
+      runDirectShellCommand(shellCommand);
+      return;
+    }
+
     if (value.startsWith('/')) {
       runCommand(value);
       return;
     }
 
     inputQueueRef.current!.enqueue({ displayText: value, userText: value });
+  }
+
+  function runDirectShellCommand(command: string) {
+    const tools = toolsRef.current;
+    if (!tools) {
+      pushError('Agent is still starting up — try the shell command again in a moment.');
+      return;
+    }
+
+    const epoch = shellEpochRef.current;
+    const controller = new AbortController();
+    shellAbortControllersRef.current.add(controller);
+    setShellCommandCount((count) => count + 1);
+    pushHistory({ id: genId(), role: 'user', content: `$ ${command}`, timestamp: Date.now() });
+
+    const previous = shellCommandTailRef.current;
+    const task = previous.catch(() => undefined).then(async () => {
+      try {
+        if (controller.signal.aborted) throw new Error('Command cancelled');
+        const output = await tools.execute('run_command', { command }, controller.signal);
+        if (epoch !== shellEpochRef.current) return;
+        pushHistory({
+          id: genId(),
+          role: 'tool',
+          content: '',
+          tool: { name: 'run_command', args: JSON.stringify({ command }), output, status: 'done' },
+          timestamp: Date.now(),
+        });
+        shellCommandContextRef.current.push(formatShellResultForModel(command, clipShellContext(output), false));
+      } catch (error) {
+        if (epoch !== shellEpochRef.current) return;
+        const output = error instanceof Error ? error.message : String(error);
+        pushHistory({
+          id: genId(),
+          role: 'tool',
+          content: '',
+          tool: { name: 'run_command', args: JSON.stringify({ command }), output, status: 'failed' },
+          timestamp: Date.now(),
+        });
+        shellCommandContextRef.current.push(formatShellResultForModel(command, output, true));
+      } finally {
+        shellAbortControllersRef.current.delete(controller);
+        setShellCommandCount((count) => Math.max(0, count - 1));
+      }
+    });
+    shellCommandTailRef.current = task.then(() => undefined, () => undefined);
   }
 
   function runCommand(raw: string) {
@@ -253,6 +325,10 @@ export default function App() {
       case '/clear':
         inputQueueRef.current!.clearWaiting();
         if (inputQueueRef.current!.running) handleInterrupt();
+        shellEpochRef.current += 1;
+        shellCommandContextRef.current = [];
+        for (const controller of shellAbortControllersRef.current) controller.abort();
+        setShellCommandCount(0);
         setHistory([]);
         conversationRef.current = [];
         // The transcript already lives in the terminal's scrollback, where
@@ -272,21 +348,45 @@ export default function App() {
         }
         break;
       }
+      case '/approval': {
+        const request = parseApprovalCommandArgs(parts.slice(1));
+        if (request.kind === 'error') {
+          pushError(request.message);
+        } else if (request.kind === 'show') {
+          pushSystem(`Current approval mode: ${approvalModeRef.current}. ${approvalModeDescription(approvalModeRef.current)}`);
+        } else if (busy) {
+          pushError('Finish or interrupt the current turn before changing approval mode.');
+        } else {
+          approvalModeRef.current = request.mode;
+          setApprovalMode(request.mode);
+          const tools = toolsRef.current;
+          if (tools) {
+            systemInstructionRef.current = buildSystemInstruction(
+              tools.workspacePath,
+              tools.skillCatalog,
+              request.mode,
+            );
+          }
+          pushSystem(`Tool approval mode: ${request.mode}. ${approvalModeDescription(request.mode)}`);
+        }
+        break;
+      }
       case '/tools': {
         const tools = toolsRef.current;
         if (!tools) {
           pushSystem('Still starting up — try again in a moment.');
           break;
         }
-        // classifyTool() always allows these outright; run_command's actual
-        // risk depends on the command itself and is only known per-call.
-        const RISK_NOTE: Record<string, string> = {
-          run_command: 'risk depends on the command — some need your approval first',
-        };
+        const mode = approvalModeRef.current;
+        const riskNote = mode === 'auto'
+          ? 'executes without approval prompts in auto mode'
+          : mode === 'manual'
+            ? 'asks before every call in manual mode'
+            : 'follows the safe classifier; risky calls ask first';
         pushSystem(
           tools
             .definitions()
-            .map((d) => `${d.name} (${RISK_NOTE[d.name] ?? 'auto-approved'}) — ${d.description}`)
+            .map((d) => `${d.name} (${riskNote}) — ${d.description}`)
             .join('\n'),
         );
         break;
@@ -603,6 +703,7 @@ export default function App() {
         client,
         tools,
         systemInstruction: systemInstructionRef.current,
+        approvalMode: approvalModeRef.current,
         requestApproval,
         signal: controller.signal,
       },
@@ -642,8 +743,13 @@ export default function App() {
   }
 
   queuedInputWorkerRef.current = async (turn) => {
+    await waitForShellCommands(shellCommandTailRef);
+    const shellContext = shellCommandContextRef.current.splice(0);
+    const userText = shellContext.length
+      ? `${shellContext.join('\n\n---\n\n')}\n\n---\n\nThe user's next message is:\n${turn.userText}`
+      : turn.userText;
     pushHistory({ id: genId(), role: 'user', content: turn.displayText, timestamp: Date.now() });
-    await runTurn(turn.userText);
+    await runTurn(userText);
   };
 
   function handleInterrupt() {
@@ -713,6 +819,9 @@ export default function App() {
             disabled={disabled}
             busy={busy}
             queuedCount={queuedCount}
+            shellCommandCount={shellCommandCount}
+            inputMode={inputMode}
+            onInputModeChange={setInputMode}
             disabledLabel={disabledLabel}
             onSubmit={handleSubmit}
             onInterrupt={handleInterrupt}
@@ -722,13 +831,41 @@ export default function App() {
         <StatusBar
           busy={busy}
           queuedCount={queuedCount}
+          shellCommandCount={shellCommandCount}
           turnCount={turnCount}
           model={configRef.current ? `${configRef.current.provider} · ${configRef.current.model}` : '…'}
+          approvalMode={approvalMode}
           exitArmed={exitArmed}
         />
       </Box>
     </Box>
   );
+}
+
+async function waitForShellCommands(tailRef: React.RefObject<Promise<void>>): Promise<void> {
+  while (true) {
+    const tail = tailRef.current;
+    await tail;
+    if (tail === tailRef.current) return;
+  }
+}
+
+function clipShellContext(output: string): string {
+  const maxChars = 50_000;
+  return output.length <= maxChars
+    ? output
+    : `${output.slice(0, maxChars)}\n… output truncated before adding it to model context`;
+}
+
+function approvalModeDescription(mode: ApprovalMode): string {
+  switch (mode) {
+    case 'auto':
+      return 'All tool calls and commands run without approval prompts; sandbox boundaries still apply.';
+    case 'safe':
+      return 'Low-risk calls run, risky calls ask, and forbidden calls are declined.';
+    case 'manual':
+      return 'Every non-forbidden tool call asks first; forbidden calls are declined.';
+  }
 }
 
 /**

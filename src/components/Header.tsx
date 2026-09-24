@@ -25,6 +25,7 @@ export function Header({ cwd }: { cwd: string }) {
         <Text color={theme.dim}>
           <Text color={theme.accent}>Enter</Text> to send · <Text color={theme.accent}>Shift+Enter</Text>{' '}
           for newline · <Text color={theme.accent}>/</Text> for commands ·{' '}
+          <Text color={theme.accent}>Ctrl+X</Text> shell mode ·{' '}
           <Text color={theme.accent}>Ctrl+C</Text> twice to exit
         </Text>
       </Box>

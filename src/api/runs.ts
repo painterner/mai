@@ -1,5 +1,6 @@
 import { buildSystemInstruction, runAgentTurn, type AgentEvent, type ApprovalRequest } from '../agent/loop.js';
 import { ToolRegistry } from '../agent/tools.js';
+import type { ApprovalMode } from '../agent/approval.js';
 import type { Config } from '../config.js';
 import type { LlmClient } from '../llm/types.js';
 import { EventBus } from './events.js';
@@ -21,7 +22,7 @@ export interface RunManagerOptions {
   workspace: string;
   allowWrite: boolean;
   allowShell: boolean;
-  approveRisky: boolean;
+  approvalMode: ApprovalMode;
   sandboxBinary: string | null;
   selectConfig: (provider?: string, model?: string) => Config;
   createClient: (config: Config) => LlmClient;
@@ -145,7 +146,12 @@ export class RunManager {
         {
           client: this.options.createClient(config),
           tools,
-          systemInstruction: buildSystemInstruction(tools.workspacePath, tools.skillCatalog),
+          systemInstruction: buildSystemInstruction(
+            tools.workspacePath,
+            tools.skillCatalog,
+            this.options.approvalMode,
+          ),
+          approvalMode: this.options.approvalMode,
           signal: active.controller.signal,
           requestApproval: (request) => this.requestApproval(run.id, active, request),
           takeSteering: () => active.steering.splice(0),
@@ -242,10 +248,6 @@ export class RunManager {
     active: ActiveRun,
     request: ApprovalRequest,
   ): Promise<boolean> {
-    if (this.options.approveRisky) {
-      this.emit(runId, 'run.approval_auto_granted', { ...request });
-      return Promise.resolve(true);
-    }
     this.options.store.updateRun(runId, { status: 'waiting_approval' });
     this.emit(runId, 'run.waiting_approval', { ...request });
     return new Promise<boolean>((resolve) => {

@@ -9,11 +9,30 @@
 
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type RuleDecision = 'allow' | 'review' | 'forbidden';
+export type ApprovalMode = 'auto' | 'safe' | 'manual';
+export type ApprovalAction = 'execute' | 'prompt' | 'decline';
 
 export interface ApprovalRequirement {
   decision: RuleDecision;
   risk: RiskLevel;
   reason: string;
+}
+
+/**
+ * Maps the selected user-facing mode and the conservative rule engine's
+ * recommendation to the action taken by the agent loop.
+ *
+ * `auto` deliberately bypasses the approval rules. The tool implementation
+ * and sandbox still define what the process can actually do.
+ */
+export function approvalAction(
+  mode: ApprovalMode,
+  requirement: ApprovalRequirement,
+): ApprovalAction {
+  if (mode === 'auto') return 'execute';
+  if (requirement.decision === 'forbidden') return 'decline';
+  if (mode === 'manual') return 'prompt';
+  return requirement.decision === 'review' ? 'prompt' : 'execute';
 }
 
 const RISK_ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2, critical: 3 };
