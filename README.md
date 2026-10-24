@@ -42,6 +42,10 @@ different list — same "follows the workspace" convention as `.env` itself;
 Mai falls back to the copy shipped in this project if the workspace has
 none.
 
+For private endpoints, use `providers.local.json` instead. It has priority
+over `providers.json` in both the workspace and installation directory and is
+gitignored, so local provider URLs never need to enter a public repository.
+
 The `run_command` tool needs the sandbox sidecar built once, from the sibling
 Rust repo:
 

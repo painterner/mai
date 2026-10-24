@@ -70,19 +70,21 @@ function firstExisting(candidates: string[]): string | null {
 }
 
 /**
- * Reads `providers.json` — checked in the current workspace first (so a
- * project can pin its own provider list, same "follows the workspace"
- * convention as `.env`), falling back to the copy shipped with this project
- * so a fresh checkout works with zero setup.
+ * Reads providers from the first existing file in this order:
+ * workspace `providers.local.json`, workspace `providers.json`, installation
+ * `providers.local.json`, installation `providers.json`. The local filename
+ * is gitignored so private endpoints can coexist with a publishable default.
  */
 export function loadProviders(): ProviderDef[] {
   const jsonPath = firstExisting([
+    path.join(process.cwd(), 'providers.local.json'),
     path.join(process.cwd(), 'providers.json'),
+    path.join(projectRoot(), 'providers.local.json'),
     path.join(projectRoot(), 'providers.json'),
   ]);
   if (!jsonPath) {
     throw new Error(
-      'No providers.json found (checked the current directory and the project root). ' +
+      'No providers.local.json or providers.json found (checked the current directory and the project root). ' +
         'See providers.json in the repo for the expected shape.',
     );
   }
