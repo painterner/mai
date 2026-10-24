@@ -1,0 +1,10 @@
+.git
+.agents
+.codex
+.env
+.env.docker
+.mai
+dist
+node_modules
+npm-debug.log*
+*.tgz

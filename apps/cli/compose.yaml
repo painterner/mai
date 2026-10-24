@@ -1,0 +1,42 @@
+services:
+  mai-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        sandbox-src: ../mail-cli-rust
+    image: mai-api:local
+    restart: unless-stopped
+    init: true
+    environment:
+      MAI_API_KEY: ${MAI_API_KEY:?set MAI_API_KEY in the file passed with --env-file}
+      API_PROVIDER: ${API_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      GEMINI_BASE_URL: ${GEMINI_BASE_URL:-}
+      CHATNOTE_API_KEY: ${CHATNOTE_API_KEY:-}
+      CHATNOTE_MODEL: ${CHATNOTE_MODEL:-}
+      CHATNOTE_BASE_URL: ${CHATNOTE_BASE_URL:-}
+      MAI_API_HOST: 0.0.0.0
+      MAI_API_PORT: 3141
+      MAI_API_ALLOW_WRITE: "true"
+      MAI_API_ALLOW_SHELL: "true"
+      MAI_API_APPROVAL_MODE: "auto"
+      MAI_ALLOW_SHELL: "true"
+    ports:
+      - "127.0.0.1:${MAI_API_PUBLISHED_PORT:-3141}:3141"
+    volumes:
+      - ${MAI_WORKSPACE:-.}:/workspace
+    # bubblewrap still creates nested namespaces and installs Mai's inner
+    # seccomp filter. It reuses Docker's already container-scoped /proc as a
+    # read-only mount because kernels reject a second procfs mount there.
+    # Docker is not privileged and receives no host socket or device mounts.
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=1g
+    stop_grace_period: 20s

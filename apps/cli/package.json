@@ -1,0 +1,42 @@
+{
+  "name": "mai-cli",
+  "version": "0.1.0",
+  "description": "Ink-based terminal UI for a Gemini-backed coding agent, with a Rust sidecar for sandboxed shell execution",
+  "type": "module",
+  "bin": {
+    "mai": "dist/index.js",
+    "mai-api": "dist/api-main.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.tsx",
+    "api:dev": "tsx src/api-main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "api": "node dist/api-main.js",
+    "package:sidecars": "node scripts/package-sidecars.mjs",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "dotenv": "^16.4.7",
+    "ink": "^5.0.1",
+    "react": "^18.3.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@yao-pkg/pkg": "^6.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "pkg": {
+    "assets": [
+      "providers.json"
+    ]
+  }
+}
