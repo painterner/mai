@@ -65,6 +65,7 @@ pub fn run() {
             list_providers,
             list_models,
             set_model,
+            set_approval_mode,
             autostart_status,
             set_autostart,
             get_api_status,
@@ -232,6 +233,12 @@ async fn handle_daemon_line(app: &AppHandle, line: &str) {
         if event_type == "ready" {
             let state: State<AppState> = app.state();
             *state.ready_info.lock().await = Some(value.clone());
+        } else if event_type == "approvalModeChanged" {
+            let state: State<AppState> = app.state();
+            let mut ready = state.ready_info.lock().await;
+            if let (Some(info), Some(mode)) = (ready.as_mut(), value.get("mode")) {
+                info["approvalMode"] = mode.clone();
+            }
         }
 
         if event_type == "handoffWritten" || event_type == "handoffFailed" {
@@ -406,6 +413,14 @@ async fn set_model(
         json!({ "type": "setModel", "provider": provider, "model": model }),
     )
     .await
+}
+
+#[tauri::command]
+async fn set_approval_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> {
+    if !matches!(mode.as_str(), "auto" | "safe" | "manual") {
+        return Err("Approval mode must be auto, safe, or manual.".to_string());
+    }
+    write_command(&state, json!({ "type": "setApprovalMode", "mode": mode })).await
 }
 
 #[tauri::command]

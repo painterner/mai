@@ -8,6 +8,7 @@ import {
   createTurnState,
   genId,
   type DaemonEvent,
+  type ApprovalMode,
   type Message,
   type RiskLevel,
   type TurnState,
@@ -21,6 +22,8 @@ interface ReadyInfo {
   baseUrl: string;
   hasApiKey: boolean;
   sandbox: string | null;
+  approvalMode: ApprovalMode;
+  mcpIssues?: Array<{ server: string; message: string }>;
 }
 
 interface ApprovalRequest {
@@ -51,6 +54,7 @@ export default function App() {
   const [history, setHistory] = useState<Message[]>([]);
   const [turn, setTurnState] = useState<TurnState>(createTurnState());
   const [busy, setBusy] = useState(false);
+  const [queuedCount, setQueuedCount] = useState(0);
   const [approvalRequest, setApprovalRequest] = useState<ApprovalRequest | null>(null);
   const [inputValue, setInputValue] = useState('');
   const [switching, setSwitching] = useState(false);
@@ -113,21 +117,27 @@ export default function App() {
     switch (event.type) {
       case 'ready':
         setReady(event);
-        setHistory(
-          event.resumedMessages.length
+        setHistory([
+          ...(event.resumedMessages.length
             ? event.resumedMessages
             : [
                 {
                   id: 'welcome',
-                  role: 'system',
+                  role: 'system' as const,
                   content:
                     'Welcome to Mai. It can read/search/write files in this workspace and run ' +
-                    'shell commands through a Rust-sandboxed sidecar. Risky actions pause for your ' +
-                    'approval first.',
+                    'shell commands through a Rust-sandboxed sidecar. Tool approval defaults to ' +
+                    'auto; choose safe or manual from the toolbar to tighten it.',
                   timestamp: Date.now(),
                 },
-              ],
-        );
+              ]),
+          ...(event.mcpIssues ?? []).map((issue) => ({
+            id: genId(),
+            role: 'error' as const,
+            content: `MCP server "${issue.server}" is unavailable: ${issue.message}`,
+            timestamp: Date.now(),
+          })),
+        ]);
         return;
       case 'fatal':
         setFatalError(event.message);
@@ -167,6 +177,29 @@ export default function App() {
           },
         ]);
         return;
+      case 'approvalModeChanged':
+        setReady((r) => (r ? { ...r, approvalMode: event.mode } : r));
+        setHistory((h) => [
+          ...h,
+          {
+            id: genId(),
+            role: 'system',
+            content: `Tool approval mode: ${event.mode}.`,
+            timestamp: Date.now(),
+          },
+        ]);
+        return;
+      case 'queueChanged':
+        setQueuedCount(event.waiting);
+        return;
+      case 'turnStarted':
+        stickToBottomRef.current = true;
+        setBusy(true);
+        setHistory((h) => [
+          ...h,
+          { id: genId(), role: 'user', content: event.text, timestamp: Date.now() },
+        ]);
+        return;
       default: {
         const next = applyAgentEvent(turnRef.current, event);
         setTurn(next);
@@ -189,16 +222,13 @@ export default function App() {
 
   async function sendMessage(text: string) {
     const value = text.trim();
-    if (!value || busy || !ready) return;
+    if (!value || !ready) return;
     stickToBottomRef.current = true;
-    setHistory((h) => [...h, { id: genId(), role: 'user', content: value, timestamp: Date.now() }]);
     setInputValue('');
-    setBusy(true);
     try {
       await invoke('send_message', { text: value });
     } catch (err) {
       setHistory((h) => [...h, { id: genId(), role: 'error', content: String(err), timestamp: Date.now() }]);
-      setBusy(false);
     }
   }
 
@@ -224,11 +254,9 @@ export default function App() {
   }
 
   async function clearConversation() {
-    // Clearing mid-turn would otherwise leave the turn streaming into a
-    // transcript whose model-side context the daemon has already dropped —
-    // stop it first so what's on screen and what the model remembers stay
-    // in step.
-    if (busy) await invoke('interrupt_turn');
+    // The daemon atomically interrupts the active turn and removes anything
+    // waiting behind it, so a queued message cannot slip into execution
+    // between separate interrupt and clear commands.
     setHistory([]);
     setTurn(createTurnState());
     setApprovalRequest(null);
@@ -269,6 +297,14 @@ export default function App() {
     if (!provider) return;
     try {
       await invoke('set_model', { provider, model });
+    } catch (err) {
+      setHistory((h) => [...h, { id: genId(), role: 'error', content: String(err), timestamp: Date.now() }]);
+    }
+  }
+
+  async function selectApprovalMode(mode: ApprovalMode) {
+    try {
+      await invoke('set_approval_mode', { mode });
     } catch (err) {
       setHistory((h) => [...h, { id: genId(), role: 'error', content: String(err), timestamp: Date.now() }]);
     }
@@ -335,6 +371,18 @@ export default function App() {
           {ready ? `${ready.provider} · ${ready.model} · ${ready.workspace}` : 'starting…'}
         </div>
         <div className="topbar__actions">
+          <label className="approval-picker" title="auto runs all tools; safe follows risk rules; manual asks every time">
+            <span>Approval</span>
+            <select
+              value={ready?.approvalMode ?? 'auto'}
+              onChange={(event) => void selectApprovalMode(event.target.value as ApprovalMode)}
+              disabled={!ready || busy}
+            >
+              <option value="auto">Auto</option>
+              <option value="safe">Safe</option>
+              <option value="manual">Manual</option>
+            </select>
+          </label>
           <span
             className={`service-status service-status--${apiStatus.state}`}
             title={apiStatus.message ?? apiStatus.url ?? 'Mai HTTP API'}
@@ -367,9 +415,7 @@ export default function App() {
         {!ready && <div className="dim status-line">Starting the agent…</div>}
       </div>
 
-      {approvalRequest ? (
-        <ApprovalBar request={approvalRequest} onAnswer={(a) => void answerApproval(a)} />
-      ) : pickerStage === 'provider' ? (
+      {pickerStage === 'provider' ? (
         <ModelBar
           label="Select a provider"
           models={pickerOptions}
@@ -385,28 +431,39 @@ export default function App() {
           onCancel={cancelPicker}
         />
       ) : (
-        <form className="composer" onSubmit={handleSubmit}>
-          <textarea
-            className="composer__input"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={ready ? 'Ask Mai anything… (Enter to send, Shift+Enter for a new line)' : 'Starting up…'}
-            disabled={!ready || busy}
-            rows={2}
-          />
-          <div className="composer__actions">
-            {busy ? (
-              <button type="button" className="btn" onClick={() => void interruptTurn()}>
-                Stop
-              </button>
-            ) : (
+        <>
+          {approvalRequest ? (
+            <ApprovalBar request={approvalRequest} onAnswer={(a) => void answerApproval(a)} />
+          ) : null}
+          <form className="composer" onSubmit={handleSubmit}>
+            <textarea
+              className="composer__input"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                ready
+                  ? busy
+                    ? `Mai is responding — Enter queues a message${queuedCount ? ` (${queuedCount} queued)` : ''}`
+                    : 'Ask Mai anything… (Enter to send, Shift+Enter for a new line)'
+                  : 'Starting up…'
+              }
+              disabled={!ready}
+              rows={2}
+            />
+            <div className="composer__actions">
+              {busy ? (
+                <button type="button" className="btn" onClick={() => void interruptTurn()}>
+                  Stop
+                </button>
+              ) : null}
               <button type="submit" className="btn btn--primary" disabled={!ready || !inputValue.trim()}>
-                Send
+                {busy ? 'Queue' : 'Send'}
               </button>
-            )}
-          </div>
-        </form>
+              {queuedCount ? <span className="dim">{queuedCount} queued</span> : null}
+            </div>
+          </form>
+        </>
       )}
     </div>
   );

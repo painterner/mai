@@ -26,10 +26,17 @@ function run(command, args, cwd) {
 }
 
 function hostTriple() {
-  const output = execFileSync('rustc', ['-vV'], { encoding: 'utf8' });
-  const match = output.match(/^host:\s+(.+)$/m);
-  if (!match) throw new Error('Could not determine the Rust host target triple.');
-  return match[1].trim();
+  const triples = {
+    'linux:x64': 'x86_64-unknown-linux-gnu',
+    'linux:arm64': 'aarch64-unknown-linux-gnu',
+    'darwin:x64': 'x86_64-apple-darwin',
+    'darwin:arm64': 'aarch64-apple-darwin',
+    'win32:x64': 'x86_64-pc-windows-msvc',
+    'win32:arm64': 'aarch64-pc-windows-msvc',
+  };
+  const triple = triples[`${process.platform}:${process.arch}`];
+  if (!triple) throw new Error(`Unsupported host platform: ${process.platform}/${process.arch}`);
+  return triple;
 }
 
 function readArgument(name) {

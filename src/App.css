@@ -96,6 +96,24 @@ body {
   gap: 8px;
 }
 
+.approval-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.approval-picker select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 5px 7px;
+}
+
 .service-status {
   display: inline-flex;
   align-items: center;

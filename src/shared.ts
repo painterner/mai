@@ -11,6 +11,7 @@
 export type Role = 'user' | 'assistant' | 'thought' | 'tool' | 'system' | 'error';
 export type ToolStatus = 'pending_approval' | 'running' | 'done' | 'failed' | 'declined';
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+export type ApprovalMode = 'auto' | 'safe' | 'manual';
 
 export interface ToolCallInfo {
   name: string;
@@ -53,7 +54,9 @@ export type DaemonEvent =
       baseUrl: string;
       hasApiKey: boolean;
       sandbox: string | null;
+      approvalMode: ApprovalMode;
       resumedMessages: Message[];
+      mcpIssues?: Array<{ server: string; message: string }>;
     }
   | { type: 'fatal'; message: string }
   | { type: 'handoffWritten' }
@@ -62,6 +65,9 @@ export type DaemonEvent =
   | { type: 'modelsListed'; models: string[]; current: string }
   | { type: 'modelsError'; message: string }
   | { type: 'modelChanged'; provider: string; model: string; baseUrl: string }
+  | { type: 'approvalModeChanged'; mode: ApprovalMode }
+  | { type: 'queueChanged'; waiting: number }
+  | { type: 'turnStarted'; text: string }
   | AgentEvent;
 
 let counter = 0;
