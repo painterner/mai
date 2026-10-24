@@ -1,0 +1,8 @@
+/target
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
+/test_projects
