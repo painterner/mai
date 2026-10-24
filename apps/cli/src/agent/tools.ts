@@ -317,7 +317,7 @@ export class ToolRegistry {
   private async runCommand(command: string, timeoutSeconds?: number, signal?: AbortSignal): Promise<string> {
     if (!this.sandboxBinary) {
       throw new Error(
-        'No sandbox binary configured. Build mail-cli-rust with ' +
+        'No sandbox binary configured. Build crates/mai-rust with ' +
           '`cargo build --release --bin mai-sandbox`, or set MAI_SANDBOX_BIN.',
       );
     }

@@ -16,18 +16,18 @@ Mai 不在 Node 进程内部自行 daemonize。开发和交付共有三种运行
 
 ## 源码布局
 
-本地构建脚本默认三个工程是同级目录：
+源码现在使用单一 monorepo：
 
 ```text
-workspace/
-├── mai-cli-node/
-├── mai-cli-gui/
-└── mail-cli-rust/
+mai/
+├── apps/cli/
+├── apps/desktop/
+└── crates/mai-rust/
 ```
 
-- `mai-cli-node`：CLI、stdio daemon、HTTP API 和 sidecar 打包脚本。
-- `mai-cli-gui`：Tauri 桌面宿主和安装包。
-- `mail-cli-rust`：`mai-sandbox`，Linux 下实际执行 Shell 的安全边界。
+- `apps/cli`：CLI、stdio daemon、HTTP API 和 sidecar 打包脚本。
+- `apps/desktop`：Tauri 桌面宿主和安装包。
+- `crates/mai-rust`：`mai-sandbox`，Linux 下实际执行 Shell 的安全边界。
 
 ## 三种运行方式的区别
 
@@ -49,35 +49,33 @@ workspace/
 ```text
 终端 mai / mai-api
         ↓
-本机 mai-cli-node
+本机 apps/cli
         ↓
-本机 mail-cli-rust/target/.../mai-sandbox
+本机 crates/mai-rust/target/.../mai-sandbox
         ↓
 本机当前工作目录
 ```
 
-`mai-cli-node` 查找的不是 Rust 动态库，而是独立的 `mai-sandbox` 可执行程序，并通过
+`apps/cli` 查找的不是 Rust 动态库，而是独立的 `mai-sandbox` 可执行程序，并通过
 stdin/stdout JSON 协议调用它。查找顺序是：
 
 1. `MAI_SANDBOX_BIN`；
-2. 同级 `mail-cli-rust/target/release/mai-sandbox`；
-3. 同级 `mail-cli-rust/target/debug/mai-sandbox`；
+2. monorepo `target/release/mai-sandbox`；
+3. monorepo `target/debug/mai-sandbox`；
 4. `PATH` 中的 `mai-sandbox`。
 
 典型构建和链接方式：
 
 ```bash
-cd mail-cli-rust
-cargo build --release --bin mai-sandbox
-
-cd ../mai-cli-node
 npm install
-npm run build
+cargo build --manifest-path crates/mai-rust/Cargo.toml --release --bin mai-sandbox
+npm run build -w mai-cli
+cd apps/cli
 npm link
 ```
 
 完成后，`mai` 启动 CLI，`mai-api` 启动同一 agent 内核的 HTTP 服务。CLI 输入 `/gui`
-时会查找同级 `mai-cli-gui/src-tauri/target/{release,debug}/mai-gui`，写入 conversation
+时会查找 monorepo `target/{release,debug}/mai-gui`，写入 conversation
 handoff 后退出 CLI 并启动 GUI；GUI 的 **Switch to CLI** 会保存同一 handoff、打开系统
 终端并恢复 CLI 会话。这条双向切换链路是发布升级时必须保留的回归测试。
 
@@ -162,17 +160,16 @@ MAI_WORKSPACE=/absolute/path/to/project npm run tauri dev
 
 ### 本地生成安装包
 
-安装三个工程依赖后，在 GUI 工程运行：
+在仓库根目录安装依赖并运行：
 
 ```bash
-cd mai-cli-node && npm ci
-cd ../mai-cli-gui && npm ci
-cd ../mai-cli-gui && npm run bundle
+npm ci
+npm run bundle
 ```
 
 `npm run bundle` 会依次：
 
-1. 构建 `mail-cli-rust` 的 `mai-sandbox`；
+1. 构建 `crates/mai-rust` 的 `mai-sandbox`；
 2. 使用 `@yao-pkg/pkg` 把三个 Node 入口打成独立可执行文件；
 3. 复制所有目标 sidecar 到 Tauri 的 `src-tauri/binaries`；
 4. 执行 `tauri build` 生成当前平台安装包。
@@ -182,15 +179,8 @@ runner 上原生构建。生成的 sidecar 是构建产物，不提交仓库。
 
 ### 自动发布
 
-`mai-cli-gui/.github/workflows/release.yml` 构建 Linux x64、Windows x64、macOS
-Apple Silicon 和 macOS Intel。GUI GitHub 仓库需要设置：
-
-| Repository variable | 内容 |
-| --- | --- |
-| `MAI_NODE_REPOSITORY` | `owner/mai-cli-node` |
-| `MAI_RUST_REPOSITORY` | `owner/mail-cli-rust` |
-
-私有仓库还需设置 `MAI_SOURCE_TOKEN` secret。推送 `v*` tag 或手动运行 workflow 后，
+`.github/workflows/release-desktop.yml` 构建 Linux x64、Windows x64、macOS
+Apple Silicon 和 macOS Intel。推送 `v*` tag 或手动运行 workflow 后，
 Tauri Action 会创建 draft prerelease 并上传安装包。公开发布还应配置 Apple
 签名/notarization 与 Windows 代码签名。
 
@@ -228,7 +218,6 @@ Shell 内部仍使用 bubblewrap namespaces、只读容器根目录、仅 `/work
 ### 启动
 
 ```bash
-cd mai-cli-node
 cp .env.docker.example .env.docker
 ```
 
@@ -286,9 +275,8 @@ Compose 默认只发布到宿主 `127.0.0.1`，并强制设置 `MAI_API_KEY`。�
 
 ### 容器自动发布
 
-`mai-cli-node/.github/workflows/container.yml` 使用 Buildx 构建 `linux/amd64` 和
-`linux/arm64` 并发布到 GHCR。Node 仓库需设置 `MAI_RUST_REPOSITORY`；私有 Rust
-仓库还需要 `MAI_SOURCE_TOKEN`。
+`.github/workflows/container.yml` 使用 Buildx 构建 `linux/amd64` 和
+`linux/arm64` 并发布到 GHCR。Node 和 Rust 源码来自同一个 commit，不再需要跨仓库变量。
 
 ## 平台功能边界
 

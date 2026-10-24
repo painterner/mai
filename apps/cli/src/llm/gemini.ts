@@ -4,7 +4,7 @@ import type { Content, LlmClient, StreamEvent, ToolDeclaration, FunctionCall } f
  * Thin client for the Gemini `streamGenerateContent` REST endpoint, using
  * native function calling (the `tools`/`functionCall`/`functionResponse`
  * fields) rather than the prompt-hacked "respond with one JSON action"
- * protocol mail-cli-rust uses — this gets us real token-level streaming
+ * protocol crates/mai-rust uses — this gets us real token-level streaming
  * of the final answer instead of only revealing it once a whole JSON blob
  * parses. Endpoint shape (`/models/{model}:streamGenerateContent?alt=sse`,
  * `systemInstruction`, `generationConfig.maxOutputTokens/temperature`) is

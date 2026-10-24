@@ -18,6 +18,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mai/protocol": "*",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "dotenv": "^16.4.7",
     "ink": "^5.0.1",

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
 // Load .env — workspace-level first (the directory `mai` was launched
-// from), same convention as the sibling Rust CLI (`mail-cli-rust`) — then
+// from), same convention as the sibling Rust CLI (`crates/mai-rust`) — then
 // this project's own .env as a fallback for anything the workspace didn't
 // set (dotenv.config() never overrides an already-set var, so the
 // workspace's values always win). Mirrors providers.json's "follows the
@@ -59,7 +59,7 @@ function envFlag(name: string, fallback: boolean): boolean {
   return !['0', 'false', 'no', 'off'].includes(raw.toLowerCase());
 }
 
-/** This project's own root — sibling repos are expected next to it. */
+/** The CLI package root inside the monorepo. */
 function projectRoot(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(here, '..'); // src/.. -> project root
@@ -218,27 +218,29 @@ export function loadConfig(): Config {
 }
 
 /**
- * Looks for the `mai-sandbox` binary built from `mail-cli-rust`. Checked,
- * in order: an explicit override, a release/debug build in the sibling repo
- * (this project and mail-cli-rust are expected to sit next to each other),
+ * Looks for the `mai-sandbox` binary built from `crates/mai-rust`. Checked,
+ * in order: an explicit override, a release/debug monorepo build,
  * then finally whatever `mai-sandbox` resolves to on PATH.
  */
 function resolveSandboxBinary(): string | null {
   const override = process.env.MAI_SANDBOX_BIN?.trim();
   if (override && existsSync(override)) return override;
 
-  const siblingRust = path.resolve(projectRoot(), '..', 'mail-cli-rust');
+  const monorepoRoot = path.resolve(projectRoot(), '..', '..');
+  const rustRoot = path.join(monorepoRoot, 'crates', 'mai-rust');
   const found = firstExisting([
-    path.join(siblingRust, 'target', 'release', 'mai-sandbox'),
-    path.join(siblingRust, 'target', 'debug', 'mai-sandbox'),
+    path.join(monorepoRoot, 'target', 'release', 'mai-sandbox'),
+    path.join(monorepoRoot, 'target', 'debug', 'mai-sandbox'),
+    path.join(rustRoot, 'target', 'release', 'mai-sandbox'),
+    path.join(rustRoot, 'target', 'debug', 'mai-sandbox'),
   ]);
   return found ?? 'mai-sandbox'; // fall back to PATH lookup; sandbox.ts reports a clear error if that fails too
 }
 
 /**
- * Looks for the Tauri GUI app built from `mai-cli-gui`. Checked, in
- * order: an explicit override, a release/debug Tauri build in the sibling
- * repo. Unlike the sandbox binary, this has no PATH fallback — `/gui`
+ * Looks for the Tauri GUI app built from `apps/desktop`. Checked, in
+ * order: an explicit override, then a release/debug Tauri monorepo build.
+ * Unlike the sandbox binary, this has no PATH fallback — `/gui`
  * would rather say plainly "not found" than launch some unrelated program
  * that happens to be named `mai-gui` on someone's PATH.
  */
@@ -246,9 +248,12 @@ export function resolveGuiBinary(): string | null {
   const override = process.env.MAI_GUI_BIN?.trim();
   if (override && existsSync(override)) return override;
 
-  const siblingGui = path.resolve(projectRoot(), '..', 'mai-cli-gui');
+  const monorepoRoot = path.resolve(projectRoot(), '..', '..');
+  const desktopRoot = path.join(monorepoRoot, 'apps', 'desktop');
   return firstExisting([
-    path.join(siblingGui, 'src-tauri', 'target', 'release', 'mai-gui'),
-    path.join(siblingGui, 'src-tauri', 'target', 'debug', 'mai-gui'),
+    path.join(monorepoRoot, 'target', 'release', 'mai-gui'),
+    path.join(monorepoRoot, 'target', 'debug', 'mai-gui'),
+    path.join(desktopRoot, 'src-tauri', 'target', 'release', 'mai-gui'),
+    path.join(desktopRoot, 'src-tauri', 'target', 'debug', 'mai-gui'),
   ]);
 }

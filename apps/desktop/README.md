@@ -1,16 +1,16 @@
 # Mai GUI — Tauri shell for the Gemini-backed coding agent
 
-The desktop-app twin of `../mai-cli-node`'s Ink terminal UI. This project
+The desktop-app twin of `../cli`'s Ink terminal UI. This project
 owns exactly one thing the CLI doesn't need: a window and process
-orchestration. **All agent logic lives in `mai-cli-node` and is reused
-unchanged** — this app spawns `mai-cli-node/dist/daemon.js` as a
+orchestration. **All agent logic lives in `apps/cli` and is reused
+unchanged** — this app spawns `apps/cli/dist/daemon.js` as a
 subprocess and talks to it over newline-delimited JSON on stdin/stdout, then
 relays those messages to a React frontend over Tauri's event system.
 
 ```
 ┌─────────────────────────┐        stdio (JSON lines)       ┌──────────────────────────┐
 │ React frontend (webview)│ ───invoke()──▶ Rust (src-tauri) │ ──▶ Node daemon           │
-│ src/App.tsx              │ ◀──emit()──                     │     mai-cli-node/      │
+│ src/App.tsx              │ ◀──emit()──                     │     apps/cli/      │
 └─────────────────────────┘                                  │     dist/daemon.js        │
                                                                │  (same GeminiClient,      │
                                                                │   ToolRegistry, approval  │
@@ -25,7 +25,7 @@ relays those messages to a React frontend over Tauri's event system.
 npm install
 ```
 
-Requires `mai-cli-node` built next to this project (`cd ../mai-cli-node && npm run build`)
+Requires `apps/cli` to be built (`npm run build -w mai-cli` from the repository root)
 — that's where the daemon this app spawns lives. On Linux, also needs the
 WebKitGTK dev headers to compile:
 
@@ -37,7 +37,7 @@ sudo apt-get install libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-
 
 ```bash
 npm run tauri dev      # hot-reloading dev build
-npm run tauri build -- --no-bundle   # just the raw binary, at src-tauri/target/release/mai-gui
+npm run tauri build -- --no-bundle   # raw binary is written under the root target directory
 ```
 
 ## Desktop service and installers
@@ -48,7 +48,7 @@ sidecar is restarted if it exits unexpectedly. Closing the window hides it;
 use **Quit Mai** in the tray menu to terminate Mai and its children.
 
 Build all native sidecars and the current platform's installer with one
-command (the three repositories must be sibling directories):
+command from the repository root:
 
 ```bash
 npm run bundle
@@ -57,13 +57,13 @@ npm run bundle
 Release CI builds Linux, Windows, macOS Intel, and macOS Apple Silicon
 installers. Full deployment, CI variable, Docker, security, and signing
 instructions live in
-[`../mai-cli-node/docs/deployment.md`](../mai-cli-node/docs/deployment.md).
+[`../../docs/deployment.md`](../../docs/deployment.md).
 
 ## Switching between CLI and GUI
 
 - **CLI → GUI**: type `/gui` in the Ink CLI. It writes the current
   conversation to a handoff file (`$TMPDIR/mai-handoff-<workspace-hash>.json`,
-  written by `mai-cli-node/src/handoff.ts`), spawns this app, and exits.
+  written by `apps/cli/src/handoff.ts`), spawns this app, and exits.
 - **GUI → CLI**: click "Open in CLI". The Rust `switch_to_cli` command asks
   the daemon to write the same handoff file (it already holds the
   model-side conversation state), waits for confirmation, opens a terminal
@@ -84,10 +84,8 @@ one-shot resume, not a synced/shared session.
   finish starting (and emit `ready`) before the frontend's event listener
   is registered — Tauri doesn't buffer events for late subscribers — so the
   frontend also pulls the cached payload directly on mount as a fallback.
-- `src/shared.ts` — the `Message`/`AgentEvent`/reducer types, duplicated
-  (not imported — this is a separate Vite project) from
-  `mai-cli-node/src/{types,agent/loop,agent/reducer}.ts`. Keep them in
-  sync if you change the wire format on the Node side.
+- `src/shared.ts` — frontend reducer state plus wire types imported from
+  the shared `packages/protocol` workspace package.
 - `src/App.tsx` — the chat UI: message list, composer, approval bar.
 
 ## Remaining platform work

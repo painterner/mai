@@ -1,24 +1,11 @@
 import { approvalAction, type ApprovalMode, type RiskLevel } from './approval.js';
 import type { ToolRegistry } from './tools.js';
 import type { Content, FunctionCall, LlmClient, Part } from '../llm/types.js';
+import type { AgentEvent } from '@mai/protocol';
+
+export type { AgentEvent } from '@mai/protocol';
 
 const MAX_STEPS = 25;
-
-export type AgentEvent =
-  | { type: 'text'; text: string }
-  | { type: 'thought'; text: string }
-  | { type: 'toolStart'; id: string; name: string; args: Record<string, unknown> }
-  | {
-      type: 'toolApprovalNeeded';
-      id: string;
-      name: string;
-      args: Record<string, unknown>;
-      risk: RiskLevel;
-      reason: string;
-    }
-  | { type: 'toolFinished'; id: string; name: string; output: string; status: 'done' | 'failed' | 'declined' }
-  | { type: 'done' }
-  | { type: 'error'; message: string };
 
 export interface ApprovalRequest {
   tool: string;

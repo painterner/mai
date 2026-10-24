@@ -439,7 +439,7 @@ export default function App() {
         pushSystem(
           `Mai — an Ink/React terminal UI backed by any provider listed in providers.json ` +
             `(currently: ${configRef.current?.provider ?? 'unknown'}), with a Rust sidecar ` +
-            '(mai-sandbox, from mail-cli-rust) for sandboxed shell execution.',
+            '(mai-sandbox, from crates/mai-rust) for sandboxed shell execution.',
         );
         break;
       case '/gui':
@@ -492,7 +492,7 @@ export default function App() {
     const guiBinary = resolveGuiBinary();
     if (!guiBinary) {
       pushError(
-        'Could not find the GUI app. Build it in mai-cli-gui (`npm run tauri build`, or ' +
+        'Could not find the GUI app. Build it in apps/desktop (`npm run tauri build`, or ' +
           '`npm run tauri dev` for a debug build), or set MAI_GUI_BIN to an existing binary.',
       );
       return;

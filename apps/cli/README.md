@@ -8,7 +8,7 @@ vLLM/Ollama server, ...) — with native function calling, can inspect readable
 system paths while keeping file writes inside the current workspace, and runs
 shell commands through a **Rust
 sidecar** that sandboxes them (bubblewrap + a hand-built seccomp filter —
-see [`../mail-cli-rust`](../mail-cli-rust)). Tool approval defaults to `auto`,
+see [`../../crates/mai-rust`](../../crates/mai-rust)). Tool approval defaults to `auto`,
 which runs tool calls without prompts; `/approval safe` enables risk-based
 approval and `/approval manual` asks before every non-forbidden tool. Sandboxed commands inherit
 the execution node's network, so `curl`, Git, and package-manager
@@ -46,16 +46,14 @@ For private endpoints, use `providers.local.json` instead. It has priority
 over `providers.json` in both the workspace and installation directory and is
 gitignored, so local provider URLs never need to enter a public repository.
 
-The `run_command` tool needs the sandbox sidecar built once, from the sibling
-Rust repo:
+The `run_command` tool needs the Rust sandbox sidecar built once:
 
 ```bash
-cd ../mail-cli-rust
-cargo build --release --bin mai-sandbox
+cargo build --manifest-path ../../crates/mai-rust/Cargo.toml --release --bin mai-sandbox
 ```
 
-Mai looks for that binary at `../mail-cli-rust/target/{release,debug}/mai-sandbox`
-relative to this project automatically. If your layout differs, set
+Mai looks for that binary under the monorepo `target/{release,debug}` directory
+automatically. If your layout differs, set
 `MAI_SANDBOX_BIN=/path/to/mai-sandbox` in `.env`. Without it, every other
 tool (file read/write/search) still works — only `run_command` is affected,
 and it fails with a clear message rather than silently running unsandboxed.
@@ -98,13 +96,13 @@ steering/cancellation, skills/tools discovery, direct workspace files, and
 interactive sandbox PTYs. State is stored in `.mai/api.sqlite`; the old
 stateless `POST /v1/chat` remains compatible. API file writes and shell execution
 are disabled by default; approval mode defaults to `auto`. See
-[`docs/api.md`](docs/api.md) for request/response formats, authentication,
+[`../../docs/api.md`](../../docs/api.md) for request/response formats, authentication,
 configuration, streaming events, conversation history, and security notes.
 
 For distribution, Mai ships as a Tauri desktop host (tray + autostart +
 packaged sidecars) and as a full-featured Docker service. The Docker profile
 keeps workspace writes and the bubblewrap/seccomp shell enabled. See
-[`docs/deployment.md`](docs/deployment.md) for Compose, local installers,
+[`../../docs/deployment.md`](../../docs/deployment.md) for Compose, local installers,
 cross-platform release CI, signing, and the platform support matrix.
 
 ## How a turn works
@@ -122,7 +120,7 @@ cross-platform release CI, signing, and the platform support matrix.
    index and have to be concatenated before they're valid JSON — Gemini
    hands you the whole `functionCall` args object in one piece.
 2. Each function call the model requests is classified by a **risk rule
-   engine** ported line-for-line from `mail-cli-rust`'s
+   engine** ported line-for-line from `crates/mai-rust`'s
    `agent/approval.rs` (`src/agent/approval.ts`): auto-allow, pause for
    review, or forbid outright (e.g. `rm -rf /`, touching `.ssh`/`.env`,
    `sudo`). `safe` follows that classification, `manual` asks for each
@@ -193,10 +191,10 @@ as `<server>__<tool>` instead.
 
 ## Switching to the GUI
 
-Type `/gui` to hand this conversation off to [`../mai-cli-gui`](../mai-cli-gui)
+Type `/gui` to hand this conversation off to [`../desktop`](../desktop)
 (a Tauri + React desktop app) and exit — it writes the conversation to a
 handoff file, spawns the GUI binary, and the GUI resumes where you left off.
-Needs the GUI built once (`cd ../mai-cli-gui && npm run tauri build -- --no-bundle`);
+Needs the GUI built once (`npm run tauri -w mai-gui build -- --no-bundle` from the repository root);
 if it isn't, `/gui` says so instead of failing silently. `src/daemon.ts` is
 the headless counterpart the GUI actually drives — same agent code as this
 Ink UI, spoken over newline-delimited JSON on stdin/stdout instead of a

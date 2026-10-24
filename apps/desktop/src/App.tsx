@@ -351,7 +351,7 @@ export default function App() {
         <h1>Mai couldn't start</h1>
         <pre>{fatalError}</pre>
         <p className="dim">
-          Make sure mai-cli-node is built (<code>npm run build</code>) and reachable next to this
+          Make sure apps/cli is built (<code>npm run build</code>) and reachable next to this
           project, or set <code>MAI_DAEMON_JS</code>.
         </p>
       </div>

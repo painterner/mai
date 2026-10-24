@@ -5,9 +5,9 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const guiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const workspaceRoot = path.resolve(guiRoot, '..');
-const nodeRoot = process.env.MAI_NODE_ROOT || path.join(workspaceRoot, 'mai-cli-node');
-const rustRoot = process.env.MAI_RUST_ROOT || path.join(workspaceRoot, 'mail-cli-rust');
+const workspaceRoot = path.resolve(guiRoot, '..', '..');
+const nodeRoot = process.env.MAI_NODE_ROOT || path.join(workspaceRoot, 'apps', 'cli');
+const rustRoot = process.env.MAI_RUST_ROOT || path.join(workspaceRoot, 'crates', 'mai-rust');
 const target = readArgument('--target') || hostTriple();
 const host = hostTriple();
 

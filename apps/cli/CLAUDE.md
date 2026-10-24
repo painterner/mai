@@ -5,30 +5,30 @@ is and how a turn works — read it first. This file is only the things that
 have actually bitten someone: cross-repo wiring, non-obvious constraints,
 and how to verify a change without a TTY.
 
-## Three repos, one product
+## One monorepo, three runtimes
 
 | Directory | What it is | Git? |
 |---|---|---|
-| `mai-cli-node` (here) | Ink/React terminal UI **and** `src/daemon.ts`, the headless agent both front-ends run on | yes |
-| `../mai-cli-gui` | Tauri + React desktop shell. Owns **no** agent logic — spawns this repo's `dist/daemon.js` and relays JSON | **no** |
-| `../mail-cli-rust` | Rust TUI agent (`maicli`), independent. Also builds `mai-sandbox`, the sandbox sidecar this repo shells out to | yes |
+| `apps/cli` (here) | Ink/React terminal UI **and** `src/daemon.ts`, the headless agent both front-ends run on |
+| `apps/desktop` | Tauri + React desktop shell. Owns **no** agent logic — spawns this app's `dist/daemon.js` and relays JSON |
+| `crates/mai-rust` | Rust TUI agent (`maicli`) and the `mai-sandbox` sidecar |
 
 Two consequences worth internalizing:
 
 - **The GUI has no agent code.** A feature that belongs to the agent goes in
   `src/daemon.ts` here, and the GUI gets a thin passthrough. Adding a
   daemon feature usually means touching *four* places: `daemon.ts` (protocol
-  + handler), `mai-cli-gui/src-tauri/src/lib.rs` (`#[tauri::command]` +
-  register it in `generate_handler!`), `mai-cli-gui/src/shared.ts` (event
-  type), `mai-cli-gui/src/App.tsx` (UI). Miss the `generate_handler!` list
+  + handler), `apps/desktop/src-tauri/src/lib.rs` (`#[tauri::command]` +
+  register it in `generate_handler!`), `apps/desktop/src/shared.ts` (event
+  type), `apps/desktop/src/App.tsx` (UI). Miss the `generate_handler!` list
   and the invoke fails only at runtime.
-- **`mail-cli-rust/src/agent/tools.rs` is not used by this repo.** That's
+- **`crates/mai-rust/src/agent/tools.rs` is not used by this repo.** That's
   `maicli`'s own tool registry. This repo re-implements the same tools in
   TypeScript (`src/agent/tools.ts`) and only shells out to the separate
   `src/bin/mai-sandbox.rs` binary, for `run_command` alone.
 
-`mai-cli-gui/src/shared.ts` is a hand-synced copy of this repo's
-`AgentEvent`/`Message` types. Change the shape here, mirror it there.
+Daemon wire types live in `packages/protocol`; update that package instead of
+duplicating `AgentEvent` or `Message` between applications.
 
 ## Build / verify
 
@@ -43,8 +43,8 @@ explicitly rather than assuming they will.
 
 ```bash
 npm run build                                    # this repo
-cd ../mai-cli-gui && npm run tauri build -- --no-bundle
-cd ../mail-cli-rust && cargo build --release --bin mai-sandbox
+npm run build -w mai-gui
+cargo build --manifest-path ../../crates/mai-rust/Cargo.toml --release --bin mai-sandbox
 ```
 
 If a Tauri build fails with a path from a directory that no longer exists,
@@ -63,7 +63,7 @@ code path, no UI):
 cd /tmp/scratch-workspace
 { printf '{"type":"send","text":"..."}\n'; sleep 20; \
   printf '{"type":"approve","approved":true}\n'; sleep 15; } \
-  | timeout 40 node /path/to/mai-cli-node/dist/daemon.js
+  | timeout 40 node /path/to/apps/cli/dist/daemon.js
 ```
 
 Note the `sleep`s: closing stdin exits the daemon, so a bare pipe kills it
@@ -117,7 +117,7 @@ App, not `InputPrompt`, because the input row is swapped out wholesale
 while an approval prompt or the model picker is up.
 
 **Reasoning models want `reasoning_content` echoed back — session-wide.**
-Some OpenAI-compatible providers (the user's `chatnote` proxy, DeepSeek-R1
+Some OpenAI-compatible providers (including DeepSeek-R1-style proxies)
 style) 400 with *"The reasoning_content in the thinking mode must be passed
 back to the API"* unless every assistant message in the replayed history
 carries the field once *any* turn has produced reasoning — including turns
@@ -154,14 +154,12 @@ model `/skills <name>` satisfies that precondition.
 
 ## Naming history
 
-Renamed twice: `gemini-cli-*` → `mai-cli-*` (directories), and the product
+Renamed twice: `gemini-cli-*` → `mai-cli-*`, and the product
 name `Nova` → `Mai` (binaries `nova`→`mai`, `nova-sandbox`→`mai-sandbox`,
 `nova-gui`→`mai-gui`; env vars `NOVA_*`→`MAI_*`; bundle id
-`com.nova.gui`→`com.mai.gui`). Sibling directory names are hardcoded in
-`src/config.ts` and `mai-cli-gui/src-tauri/src/lib.rs` — both broke on the
-first rename. Note the Rust repo is `mail-cli-rust` (with the `l`), which
-does not match the `mai-cli-*` pattern of the other two. A lingering
+`com.nova.gui`→`com.mai.gui`). Monorepo paths are resolved in `src/config.ts`
+and `apps/desktop/src-tauri/src/lib.rs`. A lingering
 `nova`/`gemini-cli` reference is usually rename fallout worth fixing — the
 one deliberate exception is `LEGACY_CONFIG_DIR_NAME` in
-`mail-cli-rust/src/config.rs`, which exists to keep reading old config
+`crates/mai-rust/src/config.rs`, which exists to keep reading old config
 dirs. Leave it.

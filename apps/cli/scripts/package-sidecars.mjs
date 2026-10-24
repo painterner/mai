@@ -6,9 +6,9 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const workspaceRoot = path.resolve(projectRoot, '..');
-const guiRoot = process.env.MAI_GUI_ROOT || path.join(workspaceRoot, 'mai-cli-gui');
-const rustRoot = process.env.MAI_RUST_ROOT || path.join(workspaceRoot, 'mail-cli-rust');
+const workspaceRoot = path.resolve(projectRoot, '..', '..');
+const guiRoot = process.env.MAI_GUI_ROOT || path.join(workspaceRoot, 'apps', 'desktop');
+const rustRoot = process.env.MAI_RUST_ROOT || path.join(workspaceRoot, 'crates', 'mai-rust');
 const targetTriple = readArgument('--target-triple') || process.env.TAURI_ENV_TARGET_TRIPLE || hostTriple();
 const pkgTarget = pkgTargetFor(targetTriple);
 const extension = targetTriple.includes('windows') ? '.exe' : '';
@@ -47,6 +47,8 @@ function copySandbox() {
   const explicit = process.env.MAI_SANDBOX_BUILD;
   const candidates = [
     explicit,
+    path.join(workspaceRoot, 'target', targetTriple, 'release', `mai-sandbox${extension}`),
+    path.join(workspaceRoot, 'target', 'release', `mai-sandbox${extension}`),
     path.join(rustRoot, 'target', targetTriple, 'release', `mai-sandbox${extension}`),
     path.join(rustRoot, 'target', 'release', `mai-sandbox${extension}`),
   ].filter(Boolean);

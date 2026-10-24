@@ -629,16 +629,18 @@ mod tests {
         fs::create_dir_all(workspace.join(".git")).unwrap();
         fs::write(workspace.join(".git/config"), "protected").unwrap();
         fs::write(&outside, "protected").unwrap();
+        let protected_home = dirs::home_dir().unwrap().join(".codex");
 
         let script = format!(
             "printf ok > result.txt; \
              (printf changed > .git/config) 2>/dev/null || true; \
              printf changed > {}; \
              if (printf changed > /etc/maicli-sandbox-test) 2>/dev/null; then exit 41; fi; \
-             test ! -e /home/example/.codex; \
+             test ! -e {}; \
              test -z \"${{OPENAI_API_KEY+x}}\"; \
              if unshare -m true 2>/dev/null; then exit 42; fi",
-            outside.display()
+            outside.display(),
+            protected_home.display()
         );
         let output = run_linux_command(&workspace, &script, Duration::from_secs(10))
             .await

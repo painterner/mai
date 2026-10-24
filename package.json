@@ -1,0 +1,25 @@
+{
+  "name": "mai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mai coding agent monorepo",
+  "workspaces": [
+    "apps/cli",
+    "apps/desktop",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @mai/protocol && npm run build -w mai-cli && npm run build -w mai-gui",
+    "build:cli": "npm run build -w mai-cli",
+    "build:desktop": "npm run build -w mai-gui",
+    "test": "npm test -w mai-cli",
+    "typecheck": "npm run build -w @mai/protocol && npm run typecheck -w mai-cli && npm run build -w mai-gui",
+    "cargo:check": "node scripts/cargo-check.mjs",
+    "cargo:test": "cargo test -p maicli --locked",
+    "check": "npm run build && npm test && npm run cargo:test && npm run cargo:check",
+    "bundle": "npm run bundle -w mai-gui"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

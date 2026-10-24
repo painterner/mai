@@ -1,74 +1,18 @@
-/**
- * Duplicated (not imported) from mai-cli-node's `src/types.ts` +
- * `src/agent/loop.ts` + `src/agent/reducer.ts`. This is a separate npm/Vite
- * project so it can't `import` that TS source directly; the surface here
- * is small and stable (it's just the wire format for the daemon's JSON
- * events), so keeping a synced copy is simpler than wiring up a shared
- * package. If you change the shape of `AgentEvent` or `Message` on the
- * Node side, mirror the change here too.
- */
+import type {
+  AgentEvent,
+  Message,
+} from '@mai/protocol';
 
-export type Role = 'user' | 'assistant' | 'thought' | 'tool' | 'system' | 'error';
-export type ToolStatus = 'pending_approval' | 'running' | 'done' | 'failed' | 'declined';
-export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
-export type ApprovalMode = 'auto' | 'safe' | 'manual';
-
-export interface ToolCallInfo {
-  name: string;
-  args?: string;
-  output?: string;
-  status: ToolStatus;
-}
-
-export interface Message {
-  id: string;
-  role: Role;
-  content: string;
-  streaming?: boolean;
-  tool?: ToolCallInfo;
-  timestamp: number;
-}
-
-export type AgentEvent =
-  | { type: 'text'; text: string }
-  | { type: 'thought'; text: string }
-  | { type: 'toolStart'; id: string; name: string; args: Record<string, unknown> }
-  | {
-      type: 'toolApprovalNeeded';
-      id: string;
-      name: string;
-      args: Record<string, unknown>;
-      risk: RiskLevel;
-      reason: string;
-    }
-  | { type: 'toolFinished'; id: string; name: string; output: string; status: 'done' | 'failed' | 'declined' }
-  | { type: 'done' }
-  | { type: 'error'; message: string };
-
-export type DaemonEvent =
-  | {
-      type: 'ready';
-      workspace: string;
-      provider: string;
-      model: string;
-      baseUrl: string;
-      hasApiKey: boolean;
-      sandbox: string | null;
-      approvalMode: ApprovalMode;
-      resumedMessages: Message[];
-      mcpIssues?: Array<{ server: string; message: string }>;
-    }
-  | { type: 'fatal'; message: string }
-  | { type: 'handoffWritten' }
-  | { type: 'handoffFailed'; message: string }
-  | { type: 'providersListed'; providers: string[]; current: string }
-  | { type: 'modelsListed'; models: string[]; current: string }
-  | { type: 'modelsError'; message: string }
-  | { type: 'modelChanged'; provider: string; model: string; baseUrl: string }
-  | { type: 'approvalModeChanged'; mode: ApprovalMode }
-  | { type: 'queueChanged'; waiting: number }
-  | { type: 'turnStarted'; text: string }
-  | AgentEvent;
+export type {
+  AgentEvent,
+  ApprovalMode,
+  DaemonEvent,
+  Message,
+  RiskLevel,
+  Role,
+  ToolCallInfo,
+  ToolStatus,
+} from '@mai/protocol';
 
 let counter = 0;
 export function genId(): string {

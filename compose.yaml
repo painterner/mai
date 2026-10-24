@@ -3,8 +3,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      additional_contexts:
-        sandbox-src: ../mail-cli-rust
     image: mai-api:local
     restart: unless-stopped
     init: true
@@ -17,9 +15,6 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-}
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-}
-      CHATNOTE_API_KEY: ${CHATNOTE_API_KEY:-}
-      CHATNOTE_MODEL: ${CHATNOTE_MODEL:-}
-      CHATNOTE_BASE_URL: ${CHATNOTE_BASE_URL:-}
       MAI_API_HOST: 0.0.0.0
       MAI_API_PORT: 3141
       MAI_API_ALLOW_WRITE: "true"

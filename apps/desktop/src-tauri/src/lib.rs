@@ -1,6 +1,6 @@
 //! Mai's Tauri desktop host. It keeps the local agent daemon and HTTP API
 //! sidecars alive, owns the tray/autostart lifecycle, and relays daemon JSON
-//! events to the React webview. Agent logic remains in `mai-cli-node`.
+//! events to the React webview. Agent logic remains in `apps/cli`.
 
 use std::ffi::OsString;
 use std::fs;
@@ -581,12 +581,11 @@ fn child_path() -> OsString {
 }
 
 fn workspace_root() -> Option<PathBuf> {
-    let executable = std::env::current_exe().ok()?;
-    let mut directory = executable.parent()?.to_path_buf();
-    for _ in 0..4 {
-        directory = directory.parent()?.to_path_buf();
-    }
-    Some(directory)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()?
+        .parent()?
+        .parent()
+        .map(Path::to_path_buf)
 }
 
 fn resolve_sibling_js(relative: &str, env_override: &str) -> Option<PathBuf> {
@@ -596,7 +595,7 @@ fn resolve_sibling_js(relative: &str, env_override: &str) -> Option<PathBuf> {
             return Some(path);
         }
     }
-    let candidate = workspace_root()?.join("mai-cli-node").join(relative);
+    let candidate = workspace_root()?.join("apps").join("cli").join(relative);
     candidate.exists().then_some(candidate)
 }
 
@@ -616,7 +615,7 @@ fn cli_invocation() -> Result<(String, Vec<String>), String> {
         }
     }
     let entry = resolve_sibling_js("dist/index.js", "MAI_CLI_JS").ok_or_else(|| {
-        "Could not find the packaged mai-cli sidecar or mai-cli-node/dist/index.js".to_string()
+        "Could not find the packaged mai-cli sidecar or apps/cli/dist/index.js".to_string()
     })?;
     Ok((node_binary(), vec![entry.to_string_lossy().to_string()]))
 }

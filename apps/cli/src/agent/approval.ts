@@ -1,5 +1,5 @@
 /**
- * Faithful TypeScript port of mail-cli-rust's src/agent/approval.rs — a
+ * Faithful TypeScript port of crates/mai-rust's src/agent/approval.rs — a
  * conservative rule engine that classifies a tool call (in particular a
  * shell command) as auto-allowed, needing human review, or outright
  * forbidden, *before* it ever reaches the sandbox. Kept in lockstep with
@@ -7,9 +7,10 @@
  * sharing the exact same rules means a gap found in one gets fixed in both.
  */
 
-export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+import type { ApprovalMode, RiskLevel } from '@mai/protocol';
+
+export type { ApprovalMode, RiskLevel } from '@mai/protocol';
 export type RuleDecision = 'allow' | 'review' | 'forbidden';
-export type ApprovalMode = 'auto' | 'safe' | 'manual';
 export type ApprovalAction = 'execute' | 'prompt' | 'decline';
 
 export interface ApprovalRequirement {

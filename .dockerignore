@@ -6,5 +6,8 @@
 .mai
 dist
 node_modules
+target
+providers.local.json
+apps/desktop/src-tauri/binaries
 npm-debug.log*
 *.tgz

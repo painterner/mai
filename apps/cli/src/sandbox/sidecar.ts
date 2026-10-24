@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 
 /**
- * Talks to the `mai-sandbox` binary built from `mail-cli-rust`
+ * Talks to the `mai-sandbox` binary built from `crates/mai-rust`
  * (`src/bin/mai-sandbox.rs`): one JSON request on stdin, one JSON response
  * on stdout. That binary owns all the bubblewrap/seccomp details — this
  * file only knows the wire format, not the sandboxing itself. See the
@@ -113,7 +113,7 @@ function launchErrorMessage(binary: string, err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   return (
     `Failed to launch sandbox binary "${binary}": ${message}. ` +
-    'Build it with `cargo build --release --bin mai-sandbox` in mail-cli-rust, ' +
+    'Build it with `cargo build --release --bin mai-sandbox` in crates/mai-rust, ' +
     'or point MAI_SANDBOX_BIN at an existing build.'
   );
 }

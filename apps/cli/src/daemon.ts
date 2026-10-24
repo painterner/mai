@@ -3,11 +3,12 @@ import readline from 'node:readline';
 import { loadConfig, configForProvider, saveState, type Config } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
 import { ToolRegistry } from './agent/tools.js';
-import { runAgentTurn, buildSystemInstruction, type AgentEvent, type ApprovalRequest } from './agent/loop.js';
+import { runAgentTurn, buildSystemInstruction, type ApprovalRequest } from './agent/loop.js';
 import type { ApprovalMode } from './agent/approval.js';
 import { readAndClearHandoff, writeHandoff } from './handoff.js';
 import type { Message } from './types.js';
 import { SerialQueue } from './serial-queue.js';
+import type { DaemonCommand as InCommand, DaemonEvent as OutEvent } from '@mai/protocol';
 
 /**
  * Headless agent daemon: same agent/tools/approval/LLM code the Ink CLI
@@ -21,42 +22,6 @@ import { SerialQueue } from './serial-queue.js';
  * Anything unparsable on stdin is ignored; malformed output never happens
  * by construction (we only ever JSON.stringify our own typed objects).
  */
-
-type InCommand =
-  | { type: 'send'; text: string }
-  | { type: 'approve'; approved: boolean }
-  | { type: 'clear' }
-  | { type: 'interrupt' }
-  | { type: 'handoff'; uiMessages: Message[] }
-  | { type: 'listProviders' }
-  | { type: 'listModels'; provider: string }
-  | { type: 'setModel'; provider: string; model: string }
-  | { type: 'setApprovalMode'; mode: ApprovalMode };
-
-type OutEvent =
-  | {
-      type: 'ready';
-      workspace: string;
-      provider: string;
-      model: string;
-      baseUrl: string;
-      hasApiKey: boolean;
-      sandbox: string | null;
-      approvalMode: ApprovalMode;
-      resumedMessages: Message[];
-      mcpIssues: Array<{ server: string; message: string }>;
-    }
-  | { type: 'fatal'; message: string }
-  | { type: 'handoffWritten' }
-  | { type: 'handoffFailed'; message: string }
-  | { type: 'providersListed'; providers: string[]; current: string }
-  | { type: 'modelsListed'; models: string[]; current: string }
-  | { type: 'modelsError'; message: string }
-  | { type: 'modelChanged'; provider: string; model: string; baseUrl: string }
-  | { type: 'approvalModeChanged'; mode: ApprovalMode }
-  | { type: 'queueChanged'; waiting: number }
-  | { type: 'turnStarted'; text: string }
-  | AgentEvent;
 
 function emit(event: OutEvent) {
   process.stdout.write(`${JSON.stringify(event)}\n`);

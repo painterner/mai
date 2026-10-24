@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/mai-rust",
+  "apps/desktop/src-tauri",
+]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
