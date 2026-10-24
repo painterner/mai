@@ -18,9 +18,10 @@ const CHAT_WIDTH: u16 = 6;
 const AGENT_WIDTH: u16 = 7;
 const MODE_GAP_WIDTH: u16 = 1;
 const AUTO_WIDTH: u16 = 6;
+const SAFE_WIDTH: u16 = 6;
 const MANUAL_WIDTH: u16 = 8;
 const MODE_CONTROLS_WIDTH: u16 =
-    CHAT_WIDTH + AGENT_WIDTH + MODE_GAP_WIDTH + AUTO_WIDTH + MANUAL_WIDTH;
+    CHAT_WIDTH + AGENT_WIDTH + MODE_GAP_WIDTH + AUTO_WIDTH + SAFE_WIDTH + MANUAL_WIDTH;
 const APPROVE_WIDTH: u16 = 9;
 const REJECT_WIDTH: u16 = 8;
 const APPROVAL_CONTROLS_WIDTH: u16 = APPROVE_WIDTH + REJECT_WIDTH;
@@ -31,6 +32,7 @@ pub enum InputControl {
     Chat,
     Agent,
     Auto,
+    Safe,
     Manual,
     Approve,
     Reject,
@@ -266,27 +268,46 @@ fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let total_lines = lines.len() as u16;
     let visible_height = inner_area.height;
-    let max_scroll = total_lines.saturating_sub(visible_height);
-    let scroll = max_scroll.saturating_sub(app.scroll_offset);
-
-    let paragraph = Paragraph::new(Text::from(lines))
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+    let (total_lines, _max_scroll, scroll) = paragraph_scroll_metrics(
+        &paragraph,
+        inner_area.width,
+        visible_height,
+        app.scroll_offset,
+    );
+    let paragraph = paragraph.scroll((scroll, 0));
 
     frame.render_widget(paragraph, inner_area);
 
     // Scrollbar
     if total_lines > visible_height {
-        let mut scrollbar_state =
-            ScrollbarState::new(max_scroll as usize).position(scroll as usize);
+        let mut scrollbar_state = ScrollbarState::new(total_lines as usize)
+            .position(scroll as usize)
+            .viewport_content_length(visible_height as usize);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight),
             area,
             &mut scrollbar_state,
         );
     }
+}
+
+/// Returns visual row counts after applying the same wrapping configuration
+/// used for rendering. Counting `Text::lines` here is incorrect: a single
+/// long logical line can occupy many terminal rows and made one wheel tick
+/// saturate the old scroll calculation all the way to the top.
+fn paragraph_scroll_metrics(
+    paragraph: &Paragraph<'_>,
+    width: u16,
+    visible_height: u16,
+    offset_from_bottom: u16,
+) -> (u16, u16, u16) {
+    let total_lines = u16::try_from(paragraph.line_count(width)).unwrap_or(u16::MAX);
+    let max_scroll = total_lines.saturating_sub(visible_height);
+    let clamped_offset = offset_from_bottom.min(max_scroll);
+    let scroll = max_scroll - clamped_offset;
+    (total_lines, max_scroll, scroll)
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -402,6 +423,14 @@ fn input_controls_title<'a>(app: &App, area: Rect) -> Option<Line<'a>> {
                 ),
             ),
             Span::styled(
+                " Safe ",
+                segmented_style(
+                    app.approval_mode == ApprovalMode::Safe,
+                    Color::Blue,
+                    enabled,
+                ),
+            ),
+            Span::styled(
                 " Manual ",
                 segmented_style(
                     app.approval_mode == ApprovalMode::Manual,
@@ -472,6 +501,15 @@ fn mode_control_areas(right: u16, row: u16) -> Vec<(InputControl, Rect)> {
                 start + CHAT_WIDTH + AGENT_WIDTH + MODE_GAP_WIDTH,
                 row,
                 AUTO_WIDTH,
+                1,
+            ),
+        ),
+        (
+            InputControl::Safe,
+            Rect::new(
+                start + CHAT_WIDTH + AGENT_WIDTH + MODE_GAP_WIDTH + AUTO_WIDTH,
+                row,
+                SAFE_WIDTH,
                 1,
             ),
         ),
@@ -583,6 +621,30 @@ mod tests {
     }
 
     #[test]
+    fn scrolling_uses_wrapped_visual_rows_instead_of_logical_lines() {
+        let paragraph = Paragraph::new(Text::from(vec![Line::from(
+            "123456789 123456789 123456789 123456789 123456789 123456789 123456789 123456789",
+        )]))
+        .wrap(Wrap { trim: false });
+
+        let (total_lines, max_scroll, scroll) = paragraph_scroll_metrics(&paragraph, 10, 2, 3);
+
+        assert!(total_lines >= 5);
+        assert!(max_scroll >= 3);
+        assert_eq!(scroll, max_scroll - 3);
+        assert_ne!(scroll, 0, "one wheel tick must not jump to the top");
+    }
+
+    #[test]
+    fn scrolling_clamps_offsets_beyond_the_wrapped_content() {
+        let paragraph = Paragraph::new("one\ntwo\nthree").wrap(Wrap { trim: false });
+        assert_eq!(
+            paragraph_scroll_metrics(&paragraph, 20, 2, u16::MAX),
+            (3, 1, 0)
+        );
+    }
+
+    #[test]
     fn mode_controls_match_right_aligned_title_positions() {
         let frame = Rect::new(0, 0, 100, 30);
         let input = main_regions(frame)[3];
@@ -630,6 +692,7 @@ mod tests {
         assert!(rendered.contains(" Chat "));
         assert!(rendered.contains(" Agent "));
         assert!(rendered.contains(" Auto "));
+        assert!(rendered.contains(" Safe "));
         assert!(rendered.contains(" Manual "));
     }
 

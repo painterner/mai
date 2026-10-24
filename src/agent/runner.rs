@@ -39,6 +39,7 @@ impl CompletionBackend for ApiClient {
 pub enum ApprovalMode {
     #[default]
     Auto,
+    Safe,
     Manual,
 }
 
@@ -46,6 +47,7 @@ impl fmt::Display for ApprovalMode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Auto => formatter.write_str("auto"),
+            Self::Safe => formatter.write_str("safe"),
             Self::Manual => formatter.write_str("manual"),
         }
     }
@@ -237,6 +239,7 @@ impl AgentRunner {
                 AgentAction::ToolCall { tool, arguments } => {
                     let requirement = self.tools.approval_requirement(&tool, &arguments);
                     let (approved, decline_reason) = match requirement.decision {
+                        _ if approval_mode == ApprovalMode::Auto => (true, String::new()),
                         RuleDecision::Forbidden => (false, requirement.reason.clone()),
                         _ if approval_mode == ApprovalMode::Manual => {
                             send_event(
@@ -689,7 +692,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_mode_reviews_unknown_commands_and_honors_denial() {
+    async fn safe_mode_reviews_unknown_commands_and_honors_denial() {
         let workspace = TestWorkspace::new();
         let backend = MockBackend::new(&[
             r#"{"type":"tool_call","tool":"run_command","arguments":{"command":"python task.py"}}"#,
@@ -699,7 +702,10 @@ mod tests {
         let tools =
             ToolRegistry::new(&workspace.0, ToolPermissions::workspace_write(true)).unwrap();
         let runner = AgentRunner::new(backend, tools, 4).unwrap();
-        let mut run = runner.start(vec![Message::user("Inspect the project")]);
+        let mut run = runner.start_with_approval(
+            vec![Message::user("Inspect the project")],
+            ApprovalMode::Safe,
+        );
 
         assert!(matches!(
             run.receiver.recv().await.unwrap().unwrap(),
@@ -716,6 +722,32 @@ mod tests {
         assert!(matches!(
             run.receiver.recv().await.unwrap().unwrap(),
             AgentEvent::ToolFinished { ref result, .. } if result.contains("DECLINED")
+        ));
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::Final { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn auto_mode_bypasses_a_forbidden_rule_and_attempts_the_tool() {
+        let workspace = TestWorkspace::new();
+        let backend = MockBackend::new(&[
+            r#"{"type":"tool_call","tool":"unknown_tool","arguments":{}}"#,
+            r#"{"type":"final","content":"done"}"#,
+        ]);
+        let tools =
+            ToolRegistry::new(&workspace.0, ToolPermissions::workspace_write(false)).unwrap();
+        let runner = AgentRunner::new(backend, tools, 3).unwrap();
+        let mut run = runner.start(vec![Message::user("Try the tool")]);
+
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::ToolStarted { ref tool } if tool == "unknown_tool"
+        ));
+        assert!(matches!(
+            run.receiver.recv().await.unwrap().unwrap(),
+            AgentEvent::ToolFinished { ref result, .. } if result.contains("ERROR")
         ));
         assert!(matches!(
             run.receiver.recv().await.unwrap().unwrap(),

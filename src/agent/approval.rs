@@ -159,7 +159,7 @@ fn classify_simple_command(arguments: &[String]) -> ApprovalRequirement {
     ) {
         return ApprovalRequirement::review(
             RiskLevel::High,
-            "Network or remote-access command requires review; command networking is sandboxed off",
+            "Network or remote-access command requires review",
         );
     }
 
@@ -194,11 +194,13 @@ fn classify_simple_command(arguments: &[String]) -> ApprovalRequirement {
         );
     }
 
-    if matches!(executable, "ls" | "cat" | "head" | "tail" | "wc" | "rg")
-        && arguments
-            .iter()
-            .skip(1)
-            .all(|argument| safe_local_argument(argument))
+    if matches!(
+        executable,
+        "ls" | "cat" | "head" | "tail" | "wc" | "rg" | "grep" | "egrep" | "fgrep"
+    ) && arguments
+        .iter()
+        .skip(1)
+        .all(|argument| safe_local_argument(argument))
     {
         return ApprovalRequirement::allow(
             "Known read-only command with workspace-relative arguments",
@@ -406,6 +408,9 @@ mod tests {
             classify_command("rg 'needle' src").decision,
             RuleDecision::Allow
         );
+        let grep_pipeline = classify_command("cat stories/framework-gemini.md | grep -n \"3.3\"");
+        assert_eq!(grep_pipeline.decision, RuleDecision::Allow);
+        assert_eq!(grep_pipeline.risk, RiskLevel::Low);
     }
 
     #[test]

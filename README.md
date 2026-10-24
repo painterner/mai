@@ -107,8 +107,9 @@ run inside an OS-enforced sandbox with:
 - a read-only host root and writable access only to the current workspace and
   an ephemeral `/tmp`;
 - `.git`, `.agents`, and `.codex` below the workspace remounted read-only;
-- a separate PID, IPC, UTS, user, cgroup, and network namespace (network is
-  disabled);
+- a separate PID, IPC, UTS, user, and cgroup namespace; the host network is
+  inherited so package managers, browsers, and other approved commands can
+  access the internet;
 - a cleared environment with only a small non-secret allowlist;
 - a seccomp filter that rejects privilege, mount, tracing, kernel-module,
   keyring, BPF, and namespace-escape system calls.
@@ -133,20 +134,22 @@ The input border has two clickable segmented controls in its upper-right
 corner:
 
 - `Chat / Agent` switches the conversation mode.
-- `Auto / Manual` controls tool approval. Auto first applies deterministic
-  command rules. Narrow read/build commands run directly in the sandbox,
-  forbidden commands are rejected, and commands requiring review are sent to
-  a separate model approval review. Manual pauses before every non-forbidden
-  tool call and replaces the mode controls with clickable `Approve / Reject`
-  actions.
+- `Auto / Safe / Manual` controls tool approval. Auto is the default and runs
+  every requested tool without an approval prompt. Safe applies deterministic
+  command rules: narrow read/build commands run directly, forbidden commands
+  are rejected, and commands requiring review are sent to a separate model
+  approval review. Manual pauses before every non-forbidden tool call and
+  replaces the mode controls with clickable `Approve / Reject` actions.
 
 The command rule engine safely splits only plain command chains joined by
-`&&`, `||`, `;`, or `|` and applies the most restrictive result. Shell
+`&&`, `||`, `;`, or `|` and applies the most restrictive result in Safe and
+Manual modes. Shell
 expansion, redirection, assignments, globs, control flow, and nested shells are
 treated conservatively and require review. Automatic review uses an additional
 model call, enforces a low/medium/high/critical risk threshold, requires
 explicit user authorization for high-risk actions, denies critical risk, and
-fails closed on API, timeout, or parse errors. Approval is not a replacement
+fails closed on API, timeout, or parse errors when Safe mode invokes it.
+Approval is not a replacement
 for the sandbox: every approved command still executes inside the same fixed
 boundary.
 
@@ -175,7 +178,7 @@ interactive TUI feature; single-prompt Agent runs remain automatic.
 | `/sessions`, `/session`, `/s` | Open the session restore picker for this directory |
 | `/model <name>`, `/m` | Switch model |
 | `/agent on\|off`, `/a on\|off` | Switch between Agent and chat modes |
-| `/approval auto\|manual` | Set Agent tool approval behavior |
+| `/approval auto\|safe\|manual` | Set Agent tool approval behavior |
 | `/tools` | Show the currently enabled Agent tools |
 | `/thinking`, `/think` | Expand/collapse the latest thinking block |
 | `/config` | Show current configuration |
@@ -187,7 +190,7 @@ interactive TUI feature; single-prompt Agent runs remain automatic.
 |-----|--------|
 | `Enter` | Send message |
 | `F2` | Switch between Chat and Agent |
-| `F3` | Switch between Auto and Manual approval |
+| `F3` | Cycle Auto, Safe, and Manual approval |
 | `F4` | Expand/collapse the latest thinking block |
 | `Enter` / `Y` | Approve a pending Manual tool call |
 | `Esc` / `N` | Reject a pending Manual tool call |

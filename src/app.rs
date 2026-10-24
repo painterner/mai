@@ -538,7 +538,8 @@ impl App {
 
     pub fn toggle_approval_mode(&mut self) {
         let mode = match self.approval_mode {
-            ApprovalMode::Auto => ApprovalMode::Manual,
+            ApprovalMode::Auto => ApprovalMode::Safe,
+            ApprovalMode::Safe => ApprovalMode::Manual,
             ApprovalMode::Manual => ApprovalMode::Auto,
         };
         self.set_approval_mode(mode);
@@ -599,6 +600,7 @@ impl App {
                     Some(ui::InputControl::Chat) => self.set_chat_mode(ChatMode::Chat),
                     Some(ui::InputControl::Agent) => self.set_chat_mode(ChatMode::Agent),
                     Some(ui::InputControl::Auto) => self.set_approval_mode(ApprovalMode::Auto),
+                    Some(ui::InputControl::Safe) => self.set_approval_mode(ApprovalMode::Safe),
                     Some(ui::InputControl::Manual) => self.set_approval_mode(ApprovalMode::Manual),
                     Some(ui::InputControl::Approve) => self.respond_to_pending_approval(true),
                     Some(ui::InputControl::Reject) => self.respond_to_pending_approval(false),
@@ -892,7 +894,7 @@ impl App {
                         "  /sessions, /s - Restore a session for this directory",
                         "  /model <name> - Switch model",
                         "  /agent on|off - Switch chat/agent mode",
-                        "  /approval auto|manual - Set tool approval mode",
+                        "  /approval auto|safe|manual - Set tool approval mode",
                         "  /tools        - Show currently enabled Agent tools",
                         "  /thinking     - Expand/collapse latest thinking",
                         "  /config       - Show current config",
@@ -933,9 +935,11 @@ impl App {
             },
             "/approval" => match parts.get(1).map(|value| value.trim()) {
                 Some("auto") => self.set_approval_mode(ApprovalMode::Auto),
+                Some("safe") => self.set_approval_mode(ApprovalMode::Safe),
                 Some("manual") => self.set_approval_mode(ApprovalMode::Manual),
                 Some(value) => {
-                    self.status = format!("Invalid approval mode '{value}'; use auto or manual");
+                    self.status =
+                        format!("Invalid approval mode '{value}'; use auto, safe, or manual");
                 }
                 None => {
                     self.status = format!("Current approval mode: {}", self.approval_mode);

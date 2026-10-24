@@ -130,7 +130,7 @@ impl ToolRegistry {
         if self.permissions.shell {
             definitions.push(ToolDefinition {
                 name: "run_command",
-                description: "Run a shell command in a network-disabled Linux sandbox with workspace-only writes and return its exit status and output.",
+                description: "Run a shell command with network access in a Linux sandbox with workspace-only writes and return its exit status and output.",
                 arguments: json!({
                     "type": "object",
                     "required": ["command"],
