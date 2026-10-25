@@ -56,9 +56,11 @@ Run the desktop application:
 npm run tauri -w mai-gui dev
 ```
 
-Private provider endpoints belong in `apps/cli/providers.local.json` or a
-workspace-local `providers.local.json`. This file is ignored by Git. Public
-examples live in `apps/cli/providers.json` and `providers.example.json`.
+User-wide provider settings belong in `~/.mai/providers.json`. Mai merges that
+file by provider name over the defaults in `apps/cli/providers.json`, then
+applies workspace `providers.json` and `providers.local.json` overrides. The
+local filename is ignored by Git. Public examples live in
+`apps/cli/providers.json` and `providers.example.json`.
 
 See [API documentation](docs/api.md), [deployment documentation](docs/deployment.md),
 and [contribution guidelines](CONTRIBUTING.md).

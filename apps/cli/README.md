@@ -23,8 +23,9 @@ cp .env.example .env   # fill in Gemini/custom-provider keys as needed
 
 ### Providers
 
-`providers.json` (in this directory) is the list of providers Mai can talk
-to. Provider identity (`type`), HTTP protocol (`wireApi`), credential source
+The bundled `providers.json` is the default list of providers Mai can talk
+to. User-wide changes belong in `~/.mai/providers.json`; it is a stable path
+that is not replaced when Mai is upgraded. Provider identity (`type`), HTTP protocol (`wireApi`), credential source
 (`auth`), and optional hosted capabilities are independent, so OpenAI and
 third-party Responses/Chat-Completions services reuse the same compatible
 client instead of requiring one client class per vendor. The legacy
@@ -39,14 +40,27 @@ selects both, for example `/model gpt-5.6-sol openai`. Switching never needs
 a restart: Mai validates names against the provider's live model-discovery
 route and persists the selection in the workspace.
 
-A workspace can drop its own `providers.json` next to its `.env` to pin a
-different list — same "follows the workspace" convention as `.env` itself;
-Mai falls back to the copy shipped in this project if the workspace has
-none.
+Provider files are merged by case-insensitive `name`, from lowest to highest
+priority: bundled `providers.json`, installation `providers.local.json`
+(backwards compatibility), `~/.mai/providers.json`, workspace
+`providers.json`, and workspace `providers.local.json`. A higher layer may
+override only the fields it needs; `auth` and `capabilities` are merged by
+field. New provider names are appended. Set `MAI_HOME` to relocate the
+user-wide `.mai` directory.
 
-For private endpoints, use `providers.local.json` instead. It has priority
-over `providers.json` in both the workspace and installation directory and is
-gitignored, so local provider URLs never need to enter a public repository.
+For example, this entire user file changes only OpenAI's default model while
+retaining the bundled protocol, authentication, URL, and capabilities:
+
+```json
+[
+  { "name": "openai", "model": "gpt-6-sol" }
+]
+```
+
+Use workspace `providers.local.json` for project-specific private endpoints.
+It is gitignored, so local provider URLs never need to enter a public
+repository. Credentials should still come from environment variables or the
+Codex credential store, not from provider JSON.
 
 ### OpenAI login and hosted tools
 

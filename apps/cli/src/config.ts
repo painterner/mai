@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
@@ -7,10 +8,10 @@ import dotenv from 'dotenv';
 // from), same convention as the sibling Rust CLI (`crates/mai-rust`) — then
 // this project's own .env as a fallback for anything the workspace didn't
 // set (dotenv.config() never overrides an already-set var, so the
-// workspace's values always win). Mirrors providers.json's "follows the
-// workspace, falls back to the install dir" lookup — lets `mai` run from
-// any directory using one central .env instead of requiring a copy in
-// every workspace.
+// workspace's values always win). Provider JSON uses a related layered
+// lookup (installation -> ~/.mai -> workspace), while environment values
+// remain centralized so `mai` can run from any directory without requiring
+// a copied .env in every workspace.
 dotenv.config();
 dotenv.config({ path: path.join(projectRoot(), '.env') });
 
@@ -97,37 +98,100 @@ function firstExisting(candidates: string[]): string | null {
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
+export interface ProviderLoadOptions {
+  workspace?: string;
+  installationRoot?: string;
+  userConfigDir?: string;
+}
+
 /**
- * Reads providers from the first existing file in this order:
- * workspace `providers.local.json`, workspace `providers.json`, installation
- * `providers.local.json`, installation `providers.json`. The local filename
- * is gitignored so private endpoints can coexist with a publishable default.
+ * Provider files are returned from lowest to highest priority. Paths are
+ * de-duplicated because running Mai from its own package directory makes the
+ * workspace and installation candidates identical.
  */
-export function loadProviders(): ProviderDef[] {
-  const jsonPath = firstExisting([
-    path.join(process.cwd(), 'providers.local.json'),
-    path.join(process.cwd(), 'providers.json'),
-    path.join(projectRoot(), 'providers.local.json'),
-    path.join(projectRoot(), 'providers.json'),
-  ]);
-  if (!jsonPath) {
+export function providerConfigPaths(options: ProviderLoadOptions = {}): string[] {
+  const workspace = path.resolve(options.workspace ?? process.cwd());
+  const installationRoot = path.resolve(options.installationRoot ?? projectRoot());
+  const userConfigDir = path.resolve(
+    options.userConfigDir
+      ?? process.env.MAI_HOME?.trim()
+      ?? path.join(os.homedir(), '.mai'),
+  );
+  return [...new Set([
+    path.join(installationRoot, 'providers.json'),
+    path.join(installationRoot, 'providers.local.json'),
+    path.join(userConfigDir, 'providers.json'),
+    path.join(workspace, 'providers.json'),
+    path.join(workspace, 'providers.local.json'),
+  ])];
+}
+
+/**
+ * Merges every existing provider file by case-insensitive provider name.
+ * Later files override earlier files, and object-valued auth/capabilities
+ * fields are merged so a user can override only a URL, model, or capability.
+ * This keeps package defaults upgradeable while making ~/.mai/providers.json
+ * the stable user-owned configuration location.
+ */
+export function loadProviders(options: ProviderLoadOptions = {}): ProviderDef[] {
+  const jsonPaths = providerConfigPaths(options).filter((candidate) => existsSync(candidate));
+  if (jsonPaths.length === 0) {
     throw new Error(
-      'No providers.local.json or providers.json found (checked the current directory and the project root). ' +
-        'See providers.json in the repo for the expected shape.',
+      'No provider configuration found (checked the installation, ~/.mai, and current workspace). ' +
+        'See the bundled providers.json for the expected shape.',
     );
   }
 
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(jsonPath, 'utf8'));
-  } catch (err) {
-    throw new Error(`Could not parse ${jsonPath}: ${(err as Error).message}`);
+  const merged = new Map<string, { entry: Record<string, unknown>; location: string }>();
+  for (const jsonPath of jsonPaths) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(readFileSync(jsonPath, 'utf8'));
+    } catch (err) {
+      throw new Error(`Could not parse ${jsonPath}: ${(err as Error).message}`);
+    }
+    if (!Array.isArray(raw)) {
+      throw new Error(`${jsonPath} must be a JSON array of provider entries.`);
+    }
+    raw.forEach((value, index) => {
+      const location = `${jsonPath}: entry ${index}`;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(`${location} must be an object.`);
+      }
+      const entry = value as Record<string, unknown>;
+      if (typeof entry.name !== 'string' || !entry.name.trim()) {
+        throw new Error(`${location} is missing a valid "name" field.`);
+      }
+      const key = entry.name.trim().toLowerCase();
+      const previous = merged.get(key)?.entry;
+      merged.set(key, {
+        entry: previous ? mergeProviderEntries(previous, entry) : entry,
+        location,
+      });
+    });
   }
-  if (!Array.isArray(raw) || raw.length === 0) {
-    throw new Error(`${jsonPath} must be a non-empty JSON array of provider entries.`);
-  }
+  if (merged.size === 0) throw new Error('Provider configuration did not define any providers.');
 
-  return raw.map((entry, i) => normalizeProviderDef(entry, `${jsonPath}: entry ${i}`));
+  return [...merged.values()].map(({ entry, location }) => normalizeProviderDef(entry, location));
+}
+
+function mergeProviderEntries(
+  base: Record<string, unknown>,
+  override: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = { ...base, ...override };
+  for (const field of ['auth', 'capabilities'] as const) {
+    const before = plainRecord(base[field]);
+    const after = plainRecord(override[field]);
+    if (before && after) result[field] = { ...before, ...after };
+  }
+  return result;
+}
+
+function plainRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 /**
