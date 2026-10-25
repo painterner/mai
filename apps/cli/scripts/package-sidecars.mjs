@@ -13,6 +13,7 @@ const targetTriple = readArgument('--target-triple') || process.env.TAURI_ENV_TA
 const pkgTarget = pkgTargetFor(targetTriple);
 const extension = targetTriple.includes('windows') ? '.exe' : '';
 const outputDir = path.join(guiRoot, 'src-tauri', 'binaries');
+const pkgExecutable = resolveWorkspaceExecutable('pkg');
 
 mkdirSync(outputDir, { recursive: true });
 execFileSync('npm', ['run', 'build'], { cwd: projectRoot, stdio: 'inherit' });
@@ -25,7 +26,7 @@ copySandbox();
 function packageEntry(entry, name) {
   const output = path.join(outputDir, `${name}-${targetTriple}${extension}`);
   execFileSync(
-    path.join(projectRoot, 'node_modules', '.bin', executableName('pkg')),
+    pkgExecutable,
     [
       entry,
       '--config',
@@ -40,6 +41,19 @@ function packageEntry(entry, name) {
       output,
     ],
     { cwd: projectRoot, stdio: 'inherit' },
+  );
+}
+
+function resolveWorkspaceExecutable(name) {
+  const executable = executableName(name);
+  const candidates = [
+    path.join(projectRoot, 'node_modules', '.bin', executable),
+    path.join(workspaceRoot, 'node_modules', '.bin', executable),
+  ];
+  const found = candidates.find(existsSync);
+  if (found) return found;
+  throw new Error(
+    `Could not find ${name} in the package or workspace node_modules. Run npm install at ${workspaceRoot}.`,
   );
 }
 

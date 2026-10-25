@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -16,13 +17,26 @@ if (target !== host) cargoArgs.push('--target', target);
 run('cargo', cargoArgs, rustRoot);
 run('npm', ['run', 'package:sidecars', '--', '--target-triple', target], nodeRoot);
 
-const tauri = path.join(guiRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'tauri.cmd' : 'tauri');
+const tauri = resolveWorkspaceExecutable('tauri');
 const tauriArgs = ['build'];
 if (target !== host) tauriArgs.push('--target', target);
 run(tauri, tauriArgs, guiRoot);
 
 function run(command, args, cwd) {
   execFileSync(command, args, { cwd, stdio: 'inherit' });
+}
+
+function resolveWorkspaceExecutable(name) {
+  const executable = process.platform === 'win32' ? `${name}.cmd` : name;
+  const candidates = [
+    path.join(guiRoot, 'node_modules', '.bin', executable),
+    path.join(workspaceRoot, 'node_modules', '.bin', executable),
+  ];
+  const found = candidates.find(existsSync);
+  if (found) return found;
+  throw new Error(
+    `Could not find ${name} in the package or workspace node_modules. Run npm install at ${workspaceRoot}.`,
+  );
 }
 
 function hostTriple() {
