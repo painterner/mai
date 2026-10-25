@@ -126,6 +126,39 @@ export function providerConfigPaths(options: ProviderLoadOptions = {}): string[]
   ])];
 }
 
+export interface UserProviderConfigInitResult {
+  path: string;
+  created: boolean;
+}
+
+/**
+ * Seed the stable user configuration with the complete bundled example.
+ * Existing user configuration is never overwritten. Failure to create the
+ * convenience copy is non-fatal because Mai can still use bundled defaults.
+ */
+export function ensureUserProviderConfig(
+  options: ProviderLoadOptions = {},
+): UserProviderConfigInitResult {
+  const installationRoot = path.resolve(options.installationRoot ?? projectRoot());
+  const userConfigDir = path.resolve(
+    options.userConfigDir
+      ?? process.env.MAI_HOME?.trim()
+      ?? path.join(os.homedir(), '.mai'),
+  );
+  const source = path.join(installationRoot, 'providers.json');
+  const destination = path.join(userConfigDir, 'providers.json');
+  if (existsSync(destination) || !existsSync(source)) return { path: destination, created: false };
+
+  try {
+    mkdirSync(userConfigDir, { recursive: true, mode: 0o700 });
+    writeFileSync(destination, readFileSync(source), { flag: 'wx', mode: 0o600 });
+    return { path: destination, created: true };
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'EEXIST') return { path: destination, created: false };
+    return { path: destination, created: false };
+  }
+}
+
 /**
  * Merges every existing provider file by case-insensitive provider name.
  * Later files override earlier files, and object-valued auth/capabilities
@@ -134,6 +167,7 @@ export function providerConfigPaths(options: ProviderLoadOptions = {}): string[]
  * the stable user-owned configuration location.
  */
 export function loadProviders(options: ProviderLoadOptions = {}): ProviderDef[] {
+  ensureUserProviderConfig(options);
   const jsonPaths = providerConfigPaths(options).filter((candidate) => existsSync(candidate));
   if (jsonPaths.length === 0) {
     throw new Error(
@@ -192,6 +226,10 @@ function plainRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error;
 }
 
 /**

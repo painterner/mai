@@ -24,8 +24,10 @@ cp .env.example .env   # fill in Gemini/custom-provider keys as needed
 ### Providers
 
 The bundled `providers.json` is the default list of providers Mai can talk
-to. User-wide changes belong in `~/.mai/providers.json`; it is a stable path
-that is not replaced when Mai is upgraded. Provider identity (`type`), HTTP protocol (`wireApi`), credential source
+to. On first startup Mai copies that complete file to
+`~/.mai/providers.json` with user-only permissions, so the available format
+is immediately visible and editable. An existing user file is never
+overwritten during startup or upgrades. Provider identity (`type`), HTTP protocol (`wireApi`), credential source
 (`auth`), and optional hosted capabilities are independent, so OpenAI and
 third-party Responses/Chat-Completions services reuse the same compatible
 client instead of requiring one client class per vendor. The legacy
@@ -48,7 +50,8 @@ override only the fields it needs; `auth` and `capabilities` are merged by
 field. New provider names are appended. Set `MAI_HOME` to relocate the
 user-wide `.mai` directory.
 
-For example, this entire user file changes only OpenAI's default model while
+For example, after removing fields you do not want to customize, this entire
+user file changes only OpenAI's default model while
 retaining the bundled protocol, authentication, URL, and capabilities:
 
 ```json

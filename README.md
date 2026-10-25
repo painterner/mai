@@ -56,10 +56,11 @@ Run the desktop application:
 npm run tauri -w mai-gui dev
 ```
 
-User-wide provider settings belong in `~/.mai/providers.json`. Mai merges that
-file by provider name over the defaults in `apps/cli/providers.json`, then
-applies workspace `providers.json` and `providers.local.json` overrides. The
-local filename is ignored by Git. Public examples live in
+User-wide provider settings belong in `~/.mai/providers.json`. On first
+startup Mai copies the bundled provider configuration there and never
+overwrites an existing user file. Mai merges that file by provider name over
+the defaults in `apps/cli/providers.json`, then applies workspace
+`providers.json` and `providers.local.json` overrides. The local filename is ignored by Git. Public examples live in
 `apps/cli/providers.json` and `providers.example.json`.
 
 See [API documentation](docs/api.md), [deployment documentation](docs/deployment.md),

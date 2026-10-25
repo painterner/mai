@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { loadProviders, normalizeProviderDef, providerConfigPaths } from '../src/config.js';
+import {
+  ensureUserProviderConfig,
+  loadProviders,
+  normalizeProviderDef,
+  providerConfigPaths,
+} from '../src/config.js';
 
 test('normalizes legacy OpenAI-compatible providers without changing their protocol', () => {
   assert.deepEqual(normalizeProviderDef({
@@ -115,6 +120,30 @@ test('merges installation, user, and workspace provider layers by name', () => {
     join(workspace, 'providers.json'),
     join(workspace, 'providers.local.json'),
   ]);
+});
+
+test('copies bundled providers to the user config once without overwriting edits', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mai-provider-init-'));
+  const installationRoot = join(root, 'installation');
+  const userConfigDir = join(root, 'home', '.mai');
+  mkdirSync(installationRoot, { recursive: true });
+  const bundled = [{
+    name: 'gemini',
+    kind: 'gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    apiKeyEnv: 'GEMINI_API_KEY',
+    model: 'gemini-test',
+  }];
+  writeJson(join(installationRoot, 'providers.json'), bundled);
+
+  const first = ensureUserProviderConfig({ installationRoot, userConfigDir });
+  assert.equal(first.created, true);
+  assert.deepEqual(JSON.parse(readFileSync(first.path, 'utf8')), bundled);
+
+  writeJson(first.path, [{ ...bundled[0], model: 'user-edited-model' }]);
+  const second = ensureUserProviderConfig({ installationRoot, userConfigDir });
+  assert.equal(second.created, false);
+  assert.equal(JSON.parse(readFileSync(second.path, 'utf8'))[0].model, 'user-edited-model');
 });
 
 function writeJson(file: string, value: unknown): void {
