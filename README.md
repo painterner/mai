@@ -60,8 +60,10 @@ User-wide provider settings belong in `~/.mai/providers.json`. On first
 startup Mai copies the bundled provider configuration there and never
 overwrites an existing user file. Mai merges that file by provider name over
 the defaults in `apps/cli/providers.json`, then applies workspace
-`providers.json` overrides. Public examples live in
-`apps/cli/providers.json` and `providers.example.json`.
+`providers.json` overrides. Provider secrets belong in
+`~/.mai/credentials.env`, created with mode `0600` on first startup.
+Public examples live in `apps/cli/providers.json` and
+`providers.example.json`.
 
 See [API documentation](docs/api.md), [deployment documentation](docs/deployment.md),
 and [contribution guidelines](CONTRIBUTING.md).

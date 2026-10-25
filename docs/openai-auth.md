@@ -44,8 +44,8 @@ Inside `mai`:
 /login status          Inspect the current file-backed login
 /login browser         ChatGPT browser callback flow
 /login device          Headless-friendly device-code flow
-/login api-key         Read OPENAI_API_KEY from the process environment
-/login access-token    Read CODEX_ACCESS_TOKEN from the process environment
+/login api-key         Read OPENAI_API_KEY from the loaded environment
+/login access-token    Read CODEX_ACCESS_TOKEN from the loaded environment
 /login reuse           Refresh and reuse an existing Codex login
 /logout                Remove the file-backed login
 ```
@@ -53,7 +53,9 @@ Inside `mai`:
 The desktop OpenAI panel sends the same operations through the shared daemon.
 Secrets are deliberately not accepted as slash-command arguments or GUI form
 values. This keeps them out of shell history, the Mai transcript, daemon JSON,
-and HTTP API state.
+and HTTP API state. Environment-backed secrets can live in
+`~/.mai/credentials.env` (mode `0600`), a workspace `.env`, or the
+launching process environment.
 
 Mai invokes the installed `codex` executable for login. Override it with
 `MAI_CODEX_BIN=/absolute/path/to/codex`. `CODEX_HOME` selects the credential

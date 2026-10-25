@@ -4,15 +4,12 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
-// Load .env — workspace-level first (the directory `mai` was launched
-// from), same convention as the sibling Rust CLI (`crates/mai-rust`) — then
-// this project's own .env as a fallback for anything the workspace didn't
-// set (dotenv.config() never overrides an already-set var, so the
-// workspace's values always win). Provider JSON uses a related layered
-// lookup (installation -> ~/.mai -> workspace), while environment values
-// remain centralized so `mai` can run from any directory without requiring
-// a copied .env in every workspace.
+// dotenv never overwrites an existing value, so ordering establishes:
+// process environment -> workspace .env -> ~/.mai/credentials.env ->
+// installation .env. The user credentials file keeps secrets stable across
+// package upgrades without weakening per-workspace overrides.
 dotenv.config();
+dotenv.config({ path: userCredentialsPath() });
 dotenv.config({ path: path.join(projectRoot(), '.env') });
 
 /** Client family. Kept for backwards-compatible providers.json entries. */
@@ -104,6 +101,18 @@ export interface ProviderLoadOptions {
   userConfigDir?: string;
 }
 
+export function userConfigDirectory(options: ProviderLoadOptions = {}): string {
+  return path.resolve(
+    options.userConfigDir
+      ?? process.env.MAI_HOME?.trim()
+      ?? path.join(os.homedir(), '.mai'),
+  );
+}
+
+export function userCredentialsPath(options: ProviderLoadOptions = {}): string {
+  return path.join(userConfigDirectory(options), 'credentials.env');
+}
+
 /**
  * Provider files are returned from lowest to highest priority. Paths are
  * de-duplicated because running Mai from its own package directory makes the
@@ -112,11 +121,7 @@ export interface ProviderLoadOptions {
 export function providerConfigPaths(options: ProviderLoadOptions = {}): string[] {
   const workspace = path.resolve(options.workspace ?? process.cwd());
   const installationRoot = path.resolve(options.installationRoot ?? projectRoot());
-  const userConfigDir = path.resolve(
-    options.userConfigDir
-      ?? process.env.MAI_HOME?.trim()
-      ?? path.join(os.homedir(), '.mai'),
-  );
+  const userConfigDir = userConfigDirectory(options);
   return [...new Set([
     path.join(installationRoot, 'providers.json'),
     path.join(userConfigDir, 'providers.json'),
@@ -129,6 +134,32 @@ export interface UserProviderConfigInitResult {
   created: boolean;
 }
 
+export type UserCredentialsInitResult = UserProviderConfigInitResult;
+
+const CREDENTIALS_TEMPLATE = `# Mai provider credentials (chmod 600)\n` +
+  `# Values here are loaded after process/workspace variables and before installation .env.\n` +
+  `# GEMINI_API_KEY=\n` +
+  `# CHATNOTE_API_KEY=\n` +
+  `# AI_GATEWAY_API_KEY=\n` +
+  `# OPENAI_API_KEY=\n` +
+  `# CODEX_ACCESS_TOKEN=\n`;
+
+/** Create a discoverable user credential file without ever overwriting it. */
+export function ensureUserCredentialsFile(
+  options: ProviderLoadOptions = {},
+): UserCredentialsInitResult {
+  const destination = userCredentialsPath(options);
+  if (existsSync(destination)) return { path: destination, created: false };
+  try {
+    mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+    writeFileSync(destination, CREDENTIALS_TEMPLATE, { flag: 'wx', mode: 0o600 });
+    return { path: destination, created: true };
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'EEXIST') return { path: destination, created: false };
+    return { path: destination, created: false };
+  }
+}
+
 /**
  * Seed the stable user configuration with the complete bundled example.
  * Existing user configuration is never overwritten. Failure to create the
@@ -138,11 +169,7 @@ export function ensureUserProviderConfig(
   options: ProviderLoadOptions = {},
 ): UserProviderConfigInitResult {
   const installationRoot = path.resolve(options.installationRoot ?? projectRoot());
-  const userConfigDir = path.resolve(
-    options.userConfigDir
-      ?? process.env.MAI_HOME?.trim()
-      ?? path.join(os.homedir(), '.mai'),
-  );
+  const userConfigDir = userConfigDirectory(options);
   const source = path.join(installationRoot, 'providers.json');
   const destination = path.join(userConfigDir, 'providers.json');
   if (existsSync(destination) || !existsSync(source)) return { path: destination, created: false };
@@ -165,6 +192,7 @@ export function ensureUserProviderConfig(
  * the stable user-owned configuration location.
  */
 export function loadProviders(options: ProviderLoadOptions = {}): ProviderDef[] {
+  ensureUserCredentialsFile(options);
   ensureUserProviderConfig(options);
   const jsonPaths = providerConfigPaths(options).filter((candidate) => existsSync(candidate));
   if (jsonPaths.length === 0) {

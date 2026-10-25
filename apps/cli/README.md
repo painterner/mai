@@ -18,7 +18,7 @@ operations can access the internet.
 
 ```bash
 npm install
-cp .env.example .env   # fill in Gemini/custom-provider keys as needed
+npm start              # first startup creates ~/.mai/providers.json and credentials.env
 ```
 
 ### Providers
@@ -35,7 +35,7 @@ client instead of requiring one client class per vendor. The legacy
 Painterner gateways, and OpenAI; see
 `providers.example.json` for more (Groq, DeepSeek, OpenRouter, a local
 Ollama server). To add an env-authenticated provider, append an entry and set
-its auth env var in `.env`. `API_PROVIDER` picks which entry is active at startup by
+its auth env var in `~/.mai/credentials.env` (or a workspace `.env`). `API_PROVIDER` picks which entry is active at startup by
 `name`; `/model` in the running CLI (or the **Model** button in the GUI)
 opens the interactive provider/model picker. `/model <model>` directly
 selects a model from the current provider, while `/model <model> <provider>`
@@ -63,6 +63,26 @@ retaining the bundled protocol, authentication, URL, and capabilities:
 Use workspace `providers.json` for project-specific endpoints. Credentials
 must still come from environment variables or the Codex credential store,
 not from provider JSON.
+
+### Credentials
+
+On first startup Mai creates `~/.mai/credentials.env` with mode `0600`.
+Store reusable provider secrets there as ordinary dotenv assignments, for
+example `AI_GATEWAY_API_KEY=...`. Values are loaded in this priority order:
+process environment, workspace `.env`, user credentials, installation
+`.env`. Existing files are never overwritten.
+
+To move credentials out of an existing installation `.env` without printing
+their values:
+
+```bash
+npm run credentials:migrate -w mai-cli
+```
+
+The migration refuses conflicting target values and moves only variables whose
+names end in `API_KEY`, `ACCESS_TOKEN`, `TOKEN`, `SECRET`, or
+`PASSWORD`. Set `MAI_HOME` to relocate the entire user configuration
+directory.
 
 ### OpenAI login and hosted tools
 
@@ -244,7 +264,7 @@ terminal.
 
 ## What's here
 
-- `src/config.ts` — loads `.env` and `providers.json`, resolves
+- `src/config.ts` — loads layered credentials and `providers.json`, resolves
   `API_PROVIDER` against it (plus each entry's `{NAME}_MODEL`/
   `{NAME}_BASE_URL` overrides) into one provider-agnostic `Config`, resolves
   the sandbox binary path.

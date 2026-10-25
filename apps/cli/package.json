@@ -13,6 +13,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "api": "node dist/api-main.js",
+    "credentials:migrate": "node scripts/migrate-credentials.mjs",
     "package:sidecars": "node scripts/package-sidecars.mjs",
     "test": "node --import tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"

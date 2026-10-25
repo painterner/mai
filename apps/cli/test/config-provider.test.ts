@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  ensureUserCredentialsFile,
   ensureUserProviderConfig,
   loadProviders,
   normalizeProviderDef,
@@ -133,6 +134,20 @@ test('copies bundled providers to the user config once without overwriting edits
   const second = ensureUserProviderConfig({ installationRoot, userConfigDir });
   assert.equal(second.created, false);
   assert.equal(JSON.parse(readFileSync(second.path, 'utf8'))[0].model, 'user-edited-model');
+});
+
+test('creates a private user credentials template once without overwriting edits', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mai-credentials-init-'));
+  const userConfigDir = join(root, '.mai');
+  const first = ensureUserCredentialsFile({ userConfigDir });
+  assert.equal(first.created, true);
+  assert.match(readFileSync(first.path, 'utf8'), /GEMINI_API_KEY/);
+  assert.equal(statSync(first.path).mode & 0o777, 0o600);
+
+  writeFileSync(first.path, 'CUSTOM_API_KEY=user-edited\n', { mode: 0o600 });
+  const second = ensureUserCredentialsFile({ userConfigDir });
+  assert.equal(second.created, false);
+  assert.equal(readFileSync(second.path, 'utf8'), 'CUSTOM_API_KEY=user-edited\n');
 });
 
 function writeJson(file: string, value: unknown): void {
