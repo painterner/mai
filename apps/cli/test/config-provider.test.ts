@@ -76,10 +76,6 @@ test('merges installation, user, and workspace provider layers by name', () => {
     capabilities: { webSearch: true, reasoning: true },
     model: 'bundled-model',
   }]);
-  writeJson(join(installationRoot, 'providers.local.json'), [{
-    name: 'openai',
-    baseUrl: 'https://installation.example/v1',
-  }]);
   writeJson(join(userConfigDir, 'providers.json'), [
     { name: 'OPENAI', model: 'user-model', capabilities: { webSearch: false } },
     {
@@ -94,11 +90,6 @@ test('merges installation, user, and workspace provider layers by name', () => {
     name: 'openai',
     baseUrl: 'https://workspace.example/v1',
   }]);
-  writeJson(join(workspace, 'providers.local.json'), [{
-    name: 'openai',
-    capabilities: { reasoning: false },
-  }]);
-
   const providers = loadProviders({ installationRoot, userConfigDir, workspace });
   assert.deepEqual(providers.map((provider) => provider.name), ['openai', 'local']);
   assert.deepEqual(providers[0], {
@@ -109,16 +100,14 @@ test('merges installation, user, and workspace provider layers by name', () => {
     baseUrl: 'https://workspace.example/v1',
     auth: { type: 'env', env: 'OPENAI_API_KEY' },
     apiKeyEnv: 'OPENAI_API_KEY',
-    capabilities: { webSearch: false, reasoning: false },
+    capabilities: { webSearch: false, reasoning: true },
     model: 'user-model',
   });
   assert.equal(providers[1].model, 'local-model');
   assert.deepEqual(providerConfigPaths({ installationRoot, userConfigDir, workspace }), [
     join(installationRoot, 'providers.json'),
-    join(installationRoot, 'providers.local.json'),
     join(userConfigDir, 'providers.json'),
     join(workspace, 'providers.json'),
-    join(workspace, 'providers.local.json'),
   ]);
 });
 

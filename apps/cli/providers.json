@@ -7,6 +7,34 @@
     "model": "gemini-2.5-flash"
   },
   {
+    "name": "chat",
+    "kind": "openai",
+    "type": "openai-compatible",
+    "wireApi": "chat-completions",
+    "baseUrl": "https://chat.painterner.me/api/v1",
+    "auth": {
+      "type": "env",
+      "env": "CHATNOTE_API_KEY"
+    },
+    "capabilities": {},
+    "model": "deepseek-v4-flash"
+  },
+  {
+    "name": "ai-gateway",
+    "kind": "openai",
+    "type": "openai-compatible",
+    "wireApi": "chat-completions",
+    "baseUrl": "https://ai-gateway.painterner.me/v1",
+    "auth": {
+      "type": "env",
+      "env": "AI_GATEWAY_API_KEY"
+    },
+    "capabilities": {
+      "reasoning": true
+    },
+    "model": "gpt-5.6-sol"
+  },
+  {
     "name": "openai",
     "kind": "openai",
     "type": "openai",
@@ -21,6 +49,6 @@
       "reasoning": true,
       "imageGeneration": false
     },
-    "model": "gpt-6-sol"
+    "model": "gpt-5.6-sol"
   }
 ]

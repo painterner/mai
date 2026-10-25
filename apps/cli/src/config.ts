@@ -119,10 +119,8 @@ export function providerConfigPaths(options: ProviderLoadOptions = {}): string[]
   );
   return [...new Set([
     path.join(installationRoot, 'providers.json'),
-    path.join(installationRoot, 'providers.local.json'),
     path.join(userConfigDir, 'providers.json'),
     path.join(workspace, 'providers.json'),
-    path.join(workspace, 'providers.local.json'),
   ])];
 }
 

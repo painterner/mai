@@ -31,7 +31,8 @@ overwritten during startup or upgrades. Provider identity (`type`), HTTP protoco
 (`auth`), and optional hosted capabilities are independent, so OpenAI and
 third-party Responses/Chat-Completions services reuse the same compatible
 client instead of requiring one client class per vendor. The legacy
-`kind` + `apiKeyEnv` shape is still accepted. Mai ships with Gemini + OpenAI; see
+`kind` + `apiKeyEnv` shape is still accepted. Mai ships with Gemini, the
+Painterner gateways, and OpenAI; see
 `providers.example.json` for more (Groq, DeepSeek, OpenRouter, a local
 Ollama server). To add an env-authenticated provider, append an entry and set
 its auth env var in `.env`. `API_PROVIDER` picks which entry is active at startup by
@@ -43,9 +44,8 @@ a restart: Mai validates names against the provider's live model-discovery
 route and persists the selection in the workspace.
 
 Provider files are merged by case-insensitive `name`, from lowest to highest
-priority: bundled `providers.json`, installation `providers.local.json`
-(backwards compatibility), `~/.mai/providers.json`, workspace
-`providers.json`, and workspace `providers.local.json`. A higher layer may
+priority: bundled `providers.json`, `~/.mai/providers.json`, and workspace
+`providers.json`. A higher layer may
 override only the fields it needs; `auth` and `capabilities` are merged by
 field. New provider names are appended. Set `MAI_HOME` to relocate the
 user-wide `.mai` directory.
@@ -60,10 +60,9 @@ retaining the bundled protocol, authentication, URL, and capabilities:
 ]
 ```
 
-Use workspace `providers.local.json` for project-specific private endpoints.
-It is gitignored, so local provider URLs never need to enter a public
-repository. Credentials should still come from environment variables or the
-Codex credential store, not from provider JSON.
+Use workspace `providers.json` for project-specific endpoints. Credentials
+must still come from environment variables or the Codex credential store,
+not from provider JSON.
 
 ### OpenAI login and hosted tools
 
