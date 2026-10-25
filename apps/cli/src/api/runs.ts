@@ -1,6 +1,7 @@
 import { buildSystemInstruction, runAgentTurn, type AgentEvent, type ApprovalRequest } from '../agent/loop.js';
 import { ToolRegistry } from '../agent/tools.js';
 import type { ApprovalMode } from '../agent/approval.js';
+import { credentialHint, isCredentialConfigured } from '../llm/auth.js';
 import type { Config } from '../config.js';
 import type { LlmClient } from '../llm/types.js';
 import { EventBus } from './events.js';
@@ -45,7 +46,9 @@ export class RunManager {
     model?: string,
   ): RunRecord {
     const config = this.options.selectConfig(provider ?? session.provider, model ?? session.model);
-    if (!config.apiKey) throw new RunInputError(`No API key configured for provider "${config.provider}".`);
+    if (!isCredentialConfigured(config)) {
+      throw new RunInputError(`Provider "${config.provider}" is not authenticated — ${credentialHint(config.auth)}.`);
+    }
     const run = this.options.store.createRun(session.id, input, config.provider, config.model);
     this.emit(run.id, 'run.queued', { sessionId: session.id });
 
@@ -150,6 +153,7 @@ export class RunManager {
             tools.workspacePath,
             tools.skillCatalog,
             this.options.approvalMode,
+            { hostedWebSearch: config.type === 'openai' && config.capabilities.webSearch },
           ),
           approvalMode: this.options.approvalMode,
           signal: active.controller.signal,

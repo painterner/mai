@@ -8,6 +8,7 @@ import { ToolRegistry } from './agent/tools.js';
 import type { ApprovalMode } from './agent/approval.js';
 import { configForProvider, loadConfig, type Config } from './config.js';
 import { createLlmClient, type Content, type LlmClient, type Part } from './llm/index.js';
+import { credentialHint, isCredentialConfigured } from './llm/auth.js';
 import { FileInputError, FileNotFoundError, FileTooLargeError, WorkspaceFiles } from './api/files.js';
 import { RunConflictError, RunInputError, RunManager, RunNotFoundError } from './api/runs.js';
 import { ApiStore, type StoredEvent } from './api/store.js';
@@ -174,15 +175,25 @@ async function handleRequest(context: ApiContext, req: IncomingMessage, res: Ser
       current: context.config.provider,
       providers: context.config.providers.map((provider) => {
         const candidate = configForProvider(context.config, provider);
-        return { name: provider.name, kind: provider.kind, baseUrl: candidate.baseUrl,
-          defaultModel: candidate.model, configured: Boolean(candidate.apiKey) };
+        return {
+          name: provider.name,
+          kind: provider.kind,
+          type: provider.type,
+          wireApi: provider.wireApi,
+          baseUrl: candidate.baseUrl,
+          defaultModel: candidate.model,
+          configured: isCredentialConfigured(candidate),
+          capabilities: provider.capabilities,
+        };
       }),
     });
     return;
   }
   if (method === 'GET' && url.pathname === '/v1/models') {
     const candidate = selectConfig(context.config, url.searchParams.get('provider') ?? undefined, undefined);
-    if (!candidate.apiKey) throw new HttpError(400, `No API key configured for provider "${candidate.provider}".`);
+    if (!isCredentialConfigured(candidate)) {
+      throw new HttpError(400, `Provider "${candidate.provider}" is not authenticated — ${credentialHint(candidate.auth)}.`);
+    }
     writeJson(res, 200, { provider: candidate.provider, current: candidate.model,
       models: await context.createClient(candidate).listModels() });
     return;
@@ -349,7 +360,12 @@ async function handleRequest(context: ApiContext, req: IncomingMessage, res: Ser
 async function handleLegacyChat(context: ApiContext, input: ChatRequest,
   req: IncomingMessage, res: ServerResponse): Promise<void> {
   const requestConfig = selectConfig(context.config, input.provider, input.model);
-  if (!requestConfig.apiKey) throw new HttpError(400, `No API key configured for provider "${requestConfig.provider}".`);
+  if (!isCredentialConfigured(requestConfig)) {
+    throw new HttpError(
+      400,
+      `Provider "${requestConfig.provider}" is not authenticated — ${credentialHint(requestConfig.auth)}.`,
+    );
+  }
   const id = `chat_${randomUUID()}`;
   const controller = new AbortController();
   req.once('aborted', () => controller.abort());
@@ -361,6 +377,7 @@ async function handleLegacyChat(context: ApiContext, input: ChatRequest,
       tools.workspacePath,
       tools.skillCatalog,
       context.options.approvalMode,
+      { hostedWebSearch: requestConfig.type === 'openai' && requestConfig.capabilities.webSearch },
     ),
     approvalMode: context.options.approvalMode,
     // The compatibility endpoint cannot be resumed to answer a prompt.

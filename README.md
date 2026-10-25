@@ -39,6 +39,11 @@ Run the terminal UI:
 npm run dev -w mai-cli
 ```
 
+The built-in OpenAI provider uses the Responses API, supports hosted web
+search, and can reuse a local Codex/ChatGPT login. Run `/login` in the CLI or
+use the OpenAI button in the desktop toolbar. See
+[OpenAI authentication and Responses](docs/openai-auth.md).
+
 Run the API:
 
 ```bash

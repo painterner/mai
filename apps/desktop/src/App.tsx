@@ -39,6 +39,13 @@ interface ApiStatus {
   message?: string;
 }
 
+interface AuthStatus {
+  configured: boolean;
+  mode: string | null;
+  expiresAt?: string;
+  accountId?: string;
+}
+
 const ROLE_LABEL: Record<Message['role'], string> = {
   user: 'you',
   assistant: 'mai',
@@ -64,6 +71,9 @@ export default function App() {
   const [autostart, setAutostartState] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
   const [apiStatus, setApiStatus] = useState<ApiStatus>({ state: 'starting' });
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  const [authPanel, setAuthPanel] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
 
   const turnRef = useRef(turn);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -89,6 +99,7 @@ export default function App() {
     });
     invoke<ApiStatus>('get_api_status').then(setApiStatus);
     invoke<boolean>('autostart_status').then(setAutostartState);
+    invoke('get_auth_status').catch(() => undefined);
     return () => {
       unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
     };
@@ -117,6 +128,7 @@ export default function App() {
     switch (event.type) {
       case 'ready':
         setReady(event);
+        void invoke('get_auth_status').catch(() => undefined);
         setHistory([
           ...(event.resumedMessages.length
             ? event.resumedMessages
@@ -188,6 +200,30 @@ export default function App() {
             timestamp: Date.now(),
           },
         ]);
+        return;
+      case 'authStatus':
+        setAuthBusy(false);
+        setAuthStatus(event);
+        setReady((current) => current ? { ...current, hasApiKey: event.configured } : current);
+        setHistory((messages) => [...messages, {
+          id: genId(),
+          role: 'system',
+          content: event.configured
+            ? `OpenAI login ready (${event.mode ?? 'unknown'}${event.expiresAt ? `, expires ${event.expiresAt}` : ''}).`
+            : 'No file-backed Codex/OpenAI login is configured.',
+          timestamp: Date.now(),
+        }]);
+        return;
+      case 'authOutput':
+        setHistory((messages) => [...messages, {
+          id: genId(), role: 'system', content: event.message, timestamp: Date.now(),
+        }]);
+        return;
+      case 'authError':
+        setAuthBusy(false);
+        setHistory((messages) => [...messages, {
+          id: genId(), role: 'error', content: `OpenAI login: ${event.message}`, timestamp: Date.now(),
+        }]);
         return;
       case 'queueChanged':
         setQueuedCount(event.waiting);
@@ -310,6 +346,32 @@ export default function App() {
     }
   }
 
+  async function loginOpenAi(method: 'browser' | 'device' | 'api-key' | 'access-token' | 'reuse') {
+    if (authBusy) return;
+    setAuthBusy(true);
+    try {
+      await invoke('login_open_ai', { method });
+    } catch (error) {
+      setAuthBusy(false);
+      setHistory((messages) => [...messages, {
+        id: genId(), role: 'error', content: String(error), timestamp: Date.now(),
+      }]);
+    }
+  }
+
+  async function logoutOpenAi() {
+    if (authBusy) return;
+    setAuthBusy(true);
+    try {
+      await invoke('logout_open_ai');
+    } catch (error) {
+      setAuthBusy(false);
+      setHistory((messages) => [...messages, {
+        id: genId(), role: 'error', content: String(error), timestamp: Date.now(),
+      }]);
+    }
+  }
+
   function cancelPicker() {
     setPickerStage(null);
     pendingProviderRef.current = null;
@@ -392,6 +454,9 @@ export default function App() {
           <button className="btn btn--ghost" onClick={() => void toggleAutostart()} disabled={autostartBusy}>
             {autostartBusy ? 'Updating…' : `Start at login: ${autostart ? 'On' : 'Off'}`}
           </button>
+          <button className="btn btn--ghost" onClick={() => setAuthPanel((open) => !open)} disabled={!ready}>
+            OpenAI: {authStatus?.configured ? 'Signed in' : 'Login'}
+          </button>
           <button className="btn btn--ghost" onClick={() => void clearConversation()} disabled={!ready}>
             Clear
           </button>
@@ -429,6 +494,14 @@ export default function App() {
           current={pendingDefaultModelRef.current}
           onSelect={(m) => void selectModel(m)}
           onCancel={cancelPicker}
+        />
+      ) : authPanel ? (
+        <AuthBar
+          status={authStatus}
+          busy={authBusy}
+          onLogin={(method) => void loginOpenAi(method)}
+          onLogout={() => void logoutOpenAi()}
+          onClose={() => setAuthPanel(false)}
         />
       ) : (
         <>
@@ -469,6 +542,42 @@ export default function App() {
   );
 }
 
+function AuthBar({
+  status,
+  busy,
+  onLogin,
+  onLogout,
+  onClose,
+}: {
+  status: AuthStatus | null;
+  busy: boolean;
+  onLogin: (method: 'browser' | 'device' | 'api-key' | 'access-token' | 'reuse') => void;
+  onLogout: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="auth-bar">
+      <div>
+        <strong>OpenAI / Codex login</strong>
+        <div className="dim">
+          {status?.configured
+            ? `${status.mode ?? 'signed in'}${status.expiresAt ? ` · expires ${status.expiresAt}` : ''}`
+            : 'Choose a login method. API-key methods read environment variables; secrets are never entered in the UI.'}
+        </div>
+      </div>
+      <div className="auth-bar__actions">
+        <button className="btn" disabled={busy} onClick={() => onLogin('browser')}>Browser</button>
+        <button className="btn" disabled={busy} onClick={() => onLogin('device')}>Device code</button>
+        <button className="btn" disabled={busy} onClick={() => onLogin('api-key')}>OPENAI_API_KEY</button>
+        <button className="btn" disabled={busy} onClick={() => onLogin('access-token')}>CODEX_ACCESS_TOKEN</button>
+        <button className="btn" disabled={busy || !status?.configured} onClick={() => onLogin('reuse')}>Refresh</button>
+        <button className="btn" disabled={busy || !status?.configured} onClick={onLogout}>Logout</button>
+        <button className="btn btn--ghost" disabled={busy} onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
 function MessageView({ message }: { message: Message }) {
   const label = ROLE_LABEL[message.role];
   return (
@@ -482,6 +591,16 @@ function MessageView({ message }: { message: Message }) {
         <div className="message__content">
           {message.content}
           {message.streaming ? <span className="cursor" /> : null}
+        </div>
+      ) : null}
+      {message.citations?.length ? (
+        <div className="message__citations">
+          <span className="dim">Sources</span>
+          {message.citations.map((citation, index) => (
+            <a key={`${citation.url}-${index}`} href={citation.url} target="_blank" rel="noreferrer">
+              [{index + 1}] {citation.title ?? citation.url}
+            </a>
+          ))}
         </div>
       ) : null}
     </div>

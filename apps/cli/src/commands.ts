@@ -7,6 +7,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     name: '/model',
     description: 'Pick interactively, or use /model <model> [provider] for direct switching',
   },
+  {
+    name: '/login',
+    description: 'Manage OpenAI login: browser, device, API key, access token, reuse, or status',
+  },
+  { name: '/logout', description: 'Remove the file-backed Codex/OpenAI login' },
   { name: '/approval', description: 'Set tool mode: auto, safe, or manual' },
   { name: '/tools', description: 'List the tools currently available to the model' },
   {
@@ -43,6 +48,19 @@ export function matchCommands(
       { name: '/approval safe', description: 'Use risk rules and ask for review-classified calls' },
       { name: '/approval manual', description: 'Ask before every non-forbidden tool call' },
     ].filter((command) => command.name.slice('/approval '.length).startsWith(query));
+  }
+
+  const loginArgument = input.match(/^\/login\s+([^\s]*)$/i);
+  if (loginArgument) {
+    const query = loginArgument[1].toLowerCase();
+    return [
+      { name: '/login status', description: 'Show the current Codex/OpenAI login' },
+      { name: '/login browser', description: 'Sign in with ChatGPT in a browser' },
+      { name: '/login device', description: 'Sign in with a device code (headless friendly)' },
+      { name: '/login api-key', description: 'Read OPENAI_API_KEY securely from the environment' },
+      { name: '/login access-token', description: 'Read CODEX_ACCESS_TOKEN securely from the environment' },
+      { name: '/login reuse', description: 'Reuse and refresh the existing Codex login' },
+    ].filter((command) => command.name.slice('/login '.length).startsWith(query));
   }
 
   const skillArgument = input.match(/^\/skills\s+([^\s]*)$/i);
@@ -108,4 +126,23 @@ export function parseApprovalCommandArgs(args: string[]): ApprovalCommandRequest
     return { kind: 'set', mode };
   }
   return { kind: 'error', message: 'Usage: /approval [auto|safe|manual]' };
+}
+
+export type LoginCommandRequest =
+  | { kind: 'show' }
+  | { kind: 'status' }
+  | { kind: 'login'; method: 'browser' | 'device' | 'api-key' | 'access-token' | 'reuse' }
+  | { kind: 'error'; message: string };
+
+export function parseLoginCommandArgs(args: string[]): LoginCommandRequest {
+  if (args.length === 0) return { kind: 'show' };
+  const method = args[0]?.toLowerCase();
+  if (args.length !== 1) {
+    return { kind: 'error', message: 'Usage: /login [status|browser|device|api-key|access-token|reuse]' };
+  }
+  if (method === 'status') return { kind: 'status' };
+  if (method === 'browser' || method === 'device' || method === 'api-key' || method === 'access-token' || method === 'reuse') {
+    return { kind: 'login', method };
+  }
+  return { kind: 'error', message: 'Usage: /login [status|browser|device|api-key|access-token|reuse]' };
 }

@@ -9,8 +9,18 @@
   {
     "name": "openai",
     "kind": "openai",
+    "type": "openai",
+    "wireApi": "responses",
     "baseUrl": "https://api.openai.com/v1",
-    "apiKeyEnv": "OPENAI_API_KEY",
-    "model": "gpt-4o-mini"
+    "auth": {
+      "type": "codex-login",
+      "chatgptBaseUrl": "https://chatgpt.com/backend-api/codex"
+    },
+    "capabilities": {
+      "webSearch": true,
+      "reasoning": true,
+      "imageGeneration": false
+    },
+    "model": "gpt-6-sol"
   }
 ]

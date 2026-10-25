@@ -62,6 +62,17 @@ export async function* runAgentTurn(
         if (event.type === 'functionCall') {
           modelParts.push({ functionCall: event.call });
           functionCalls.push(event.call);
+        } else if (event.type === 'providerState') {
+          modelParts.push({ providerState: event.state });
+        } else if (event.type === 'hostedTool') {
+          yield {
+            type: 'hostedTool',
+            id: event.id,
+            name: event.name,
+            stage: event.stage,
+          };
+        } else if (event.type === 'citation') {
+          yield { type: 'citation', citation: event.citation };
         } else {
           modelParts.push({ text: event.text, ...(event.thought ? { thought: true } : {}) });
           yield event.thought ? { type: 'thought', text: event.text } : { type: 'text', text: event.text };
@@ -90,7 +101,11 @@ export async function* runAgentTurn(
       if (action === 'decline') {
         yield { type: 'toolFinished', id, name: call.name, output: requirement.reason, status: 'declined' };
         responseParts.push({
-          functionResponse: { name: call.name, response: { error: `Forbidden: ${requirement.reason}` } },
+          functionResponse: {
+            callId: call.id,
+            name: call.name,
+            response: { error: `Forbidden: ${requirement.reason}` },
+          },
         });
         continue;
       }
@@ -113,7 +128,11 @@ export async function* runAgentTurn(
         if (!approved) {
           yield { type: 'toolFinished', id, name: call.name, output: 'Declined by user', status: 'declined' };
           responseParts.push({
-            functionResponse: { name: call.name, response: { error: 'User declined to run this tool call' } },
+            functionResponse: {
+              callId: call.id,
+              name: call.name,
+              response: { error: 'User declined to run this tool call' },
+            },
           });
           continue;
         }
@@ -123,11 +142,15 @@ export async function* runAgentTurn(
       try {
         const output = await deps.tools.execute(call.name, args, deps.signal);
         yield { type: 'toolFinished', id, name: call.name, output, status: 'done' };
-        responseParts.push({ functionResponse: { name: call.name, response: { result: output } } });
+        responseParts.push({
+          functionResponse: { callId: call.id, name: call.name, response: { result: output } },
+        });
       } catch (err) {
         const message = (err as Error).message;
         yield { type: 'toolFinished', id, name: call.name, output: message, status: 'failed' };
-        responseParts.push({ functionResponse: { name: call.name, response: { error: message } } });
+        responseParts.push({
+          functionResponse: { callId: call.id, name: call.name, response: { error: message } },
+        });
       }
     }
     contents.push({ role: 'user', parts: responseParts });
@@ -154,6 +177,7 @@ export function buildSystemInstruction(
   workspace: string,
   skillCatalog = '',
   approvalMode: ApprovalMode = 'auto',
+  options: { hostedWebSearch?: boolean } = {},
 ): string {
   const approvalGuidance = approvalMode === 'auto'
     ? 'Tool calls execute without an approval prompt in auto mode. The available tool implementations and sandbox still define the execution boundary.'
@@ -174,6 +198,15 @@ export function buildSystemInstruction(
       `${approvalGuidance} Do not claim a change or verification that was not actually performed. ` +
       'When the task is complete, reply with a concise plain-text summary and no further tool calls.',
   ];
+
+  if (options.hostedWebSearch) {
+    lines.push(
+      '',
+      'This provider supplies a hosted web_search tool. For current information, news, or web ' +
+        'research, use hosted web_search directly. Do not load a Brave or other search skill ' +
+        'unless the hosted search explicitly fails or is unavailable.',
+    );
+  }
 
   if (skillCatalog) {
     lines.push(

@@ -109,8 +109,16 @@ event: agent.toolFinished
 data: {"id":"tc1","name":"read_file","output":"...","status":"done","seq":3}
 
 id: 4
+event: agent.hostedTool
+data: {"id":"ws_1","name":"web_search","stage":"completed","seq":4}
+
+id: 5
+event: agent.citation
+data: {"citation":{"url":"https://example.com/news","title":"News"},"seq":5}
+
+id: 6
 event: run.completed
-data: {"message":"完成……","seq":4}
+data: {"message":"完成……","seq":6}
 ```
 
 事件先写 SQLite 再发送。断线后使用下面任意一种方式续传：
@@ -193,6 +201,12 @@ GET /v1/skills/{name}
 
 `/v1/tools` 返回当前权限下实际向模型提供的 function declarations。Skills 在每个 Run
 开始时重新扫描，因此新增或修改 workspace skill 不需要重启 API。
+
+`/v1/providers` 还返回 `type`、`wireApi`、`capabilities` 和统一后的 `configured` 状态。
+OpenAI Responses provider 使用托管 Web Search 时，Run 事件流会包含
+`agent.hostedTool` 和 `agent.citation`；引用 URL 与标题可以直接渲染为可点击来源。登录与
+token 管理不会作为远程 HTTP 端点暴露，必须在执行节点通过 CLI `/login`、桌面端登录面板
+或安全注入的 `OPENAI_API_KEY` 完成。详见 [OpenAI 登录说明](openai-auth.md)。
 
 MCP stdio server 在 API 进程启动时加载，并由所有 Session/Run 共享。Skill 可以通过
 `agents/openai.yaml` 声明 MCP 依赖并提供 `scripts/serve.sh`；也可以使用

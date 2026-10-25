@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { matchCommands, matchIdentifier, parseApprovalCommandArgs, parseModelCommandArgs } from '../src/commands.js';
+import {
+  matchCommands,
+  matchIdentifier,
+  parseApprovalCommandArgs,
+  parseLoginCommandArgs,
+  parseModelCommandArgs,
+} from '../src/commands.js';
 
 test('approval command supports all three modes and reports invalid input', () => {
   assert.deepEqual(parseApprovalCommandArgs([]), { kind: 'show' });
@@ -38,6 +44,18 @@ test('model command parses model first and optional provider second', () => {
   assert.deepEqual(parseModelCommandArgs(['modelA', 'providerA', 'extra']), {
     kind: 'error',
     message: 'Usage: /model <model> [provider]',
+  });
+});
+
+test('login command supports every Codex login method without accepting secrets as arguments', () => {
+  assert.deepEqual(parseLoginCommandArgs([]), { kind: 'show' });
+  assert.deepEqual(parseLoginCommandArgs(['status']), { kind: 'status' });
+  for (const method of ['browser', 'device', 'api-key', 'access-token', 'reuse'] as const) {
+    assert.deepEqual(parseLoginCommandArgs([method]), { kind: 'login', method });
+  }
+  assert.deepEqual(parseLoginCommandArgs(['api-key', 'secret']), {
+    kind: 'error',
+    message: 'Usage: /login [status|browser|device|api-key|access-token|reuse]',
   });
 });
 

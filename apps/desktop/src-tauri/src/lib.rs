@@ -65,6 +65,9 @@ pub fn run() {
             list_providers,
             list_models,
             set_model,
+            get_auth_status,
+            login_open_ai,
+            logout_open_ai,
             set_approval_mode,
             autostart_status,
             set_autostart,
@@ -413,6 +416,26 @@ async fn set_model(
         json!({ "type": "setModel", "provider": provider, "model": model }),
     )
     .await
+}
+
+#[tauri::command]
+async fn get_auth_status(state: State<'_, AppState>) -> Result<(), String> {
+    write_command(&state, json!({ "type": "getAuthStatus" })).await
+}
+
+#[tauri::command]
+async fn login_open_ai(state: State<'_, AppState>, method: String) -> Result<(), String> {
+    match method.as_str() {
+        "browser" | "device" | "api-key" | "access-token" | "reuse" => {
+            write_command(&state, json!({ "type": "loginOpenAi", "method": method })).await
+        }
+        _ => Err(format!("Unsupported OpenAI login method: {method}")),
+    }
+}
+
+#[tauri::command]
+async fn logout_open_ai(state: State<'_, AppState>) -> Result<(), String> {
+    write_command(&state, json!({ "type": "logoutOpenAi" })).await
 }
 
 #[tauri::command]

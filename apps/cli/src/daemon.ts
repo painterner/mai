@@ -2,6 +2,7 @@
 import readline from 'node:readline';
 import { loadConfig, configForProvider, saveState, type Config } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
+import { CodexAuthManager, credentialHint, isCredentialConfigured } from './llm/auth.js';
 import { ToolRegistry } from './agent/tools.js';
 import { runAgentTurn, buildSystemInstruction, type ApprovalRequest } from './agent/loop.js';
 import type { ApprovalMode } from './agent/approval.js';
@@ -36,6 +37,7 @@ let conversation: Content[] = [];
 let pendingApprovalResolve: ((approved: boolean) => void) | null = null;
 let currentAbort: AbortController | null = null;
 let busy = false;
+let authBusy = false;
 const sendQueue = new SerialQueue<string>(
   async (text) => {
     emit({ type: 'turnStarted', text });
@@ -103,7 +105,12 @@ async function init() {
     { write: true, shell: config.allowShell },
     config.sandboxBinary,
   );
-  systemInstruction = buildSystemInstruction(tools.workspacePath, tools.skillCatalog, approvalMode);
+  systemInstruction = buildSystemInstruction(
+    tools.workspacePath,
+    tools.skillCatalog,
+    approvalMode,
+    { hostedWebSearch: config.type === 'openai' && config.capabilities.webSearch },
+  );
 
   let resumedMessages: Message[] = [];
   const handoff = await readAndClearHandoff(tools.workspacePath).catch(() => null);
@@ -118,7 +125,7 @@ async function init() {
     provider: config.provider,
     model: config.model,
     baseUrl: config.baseUrl,
-    hasApiKey: Boolean(config.apiKey),
+    hasApiKey: isCredentialConfigured(config),
     sandbox: config.sandboxBinary,
     approvalMode,
     resumedMessages,
@@ -180,8 +187,11 @@ async function init() {
           break;
         }
         const candidate = configForProvider(config, def);
-        if (!candidate.apiKey) {
-          emit({ type: 'modelsError', message: `No API key configured for "${def.name}" — set ${def.apiKeyEnv}.` });
+        if (!isCredentialConfigured(candidate)) {
+          emit({
+            type: 'modelsError',
+            message: `Provider "${def.name}" is not authenticated — ${credentialHint(candidate.auth)}.`,
+          });
           break;
         }
         // Re-picking the already-active provider should highlight the
@@ -208,10 +218,25 @@ async function init() {
         }
         config = { ...configForProvider(config, def), model: cmd.model };
         client = createLlmClient(config);
+        systemInstruction = buildSystemInstruction(
+          tools.workspacePath,
+          tools.skillCatalog,
+          approvalMode,
+          { hostedWebSearch: config.type === 'openai' && config.capabilities.webSearch },
+        );
         saveState(config.workspace, config.provider, config.model);
         emit({ type: 'modelChanged', provider: config.provider, model: config.model, baseUrl: config.baseUrl });
         break;
       }
+      case 'getAuthStatus':
+        void emitAuthStatus();
+        break;
+      case 'loginOpenAi':
+        void loginOpenAi(cmd.method);
+        break;
+      case 'logoutOpenAi':
+        void logoutOpenAi();
+        break;
       case 'setApprovalMode':
         if (busy) {
           emit({ type: 'error', message: 'Finish or interrupt the current turn before changing approval mode.' });
@@ -222,7 +247,12 @@ async function init() {
           break;
         }
         approvalMode = cmd.mode;
-        systemInstruction = buildSystemInstruction(tools.workspacePath, tools.skillCatalog, approvalMode);
+        systemInstruction = buildSystemInstruction(
+          tools.workspacePath,
+          tools.skillCatalog,
+          approvalMode,
+          { hostedWebSearch: config.type === 'openai' && config.capabilities.webSearch },
+        );
         emit({ type: 'approvalModeChanged', mode: approvalMode });
         break;
     }
@@ -238,6 +268,58 @@ async function init() {
   rl.on('close', shutdown);
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
+}
+
+async function emitAuthStatus() {
+  try {
+    emit({ type: 'authStatus', ...await new CodexAuthManager().status() });
+  } catch (error) {
+    emit({ type: 'authError', message: (error as Error).message });
+  }
+}
+
+async function loginOpenAi(method: 'browser' | 'device' | 'api-key' | 'access-token' | 'reuse') {
+  if (busy || authBusy) {
+    emit({ type: 'authError', message: 'Finish the current model or login operation first.' });
+    return;
+  }
+  authBusy = true;
+  let buffered = '';
+  const flush = (force = false) => {
+    const lines = buffered.split(/\r?\n/);
+    buffered = force ? '' : lines.pop() ?? '';
+    const text = lines.map((line) => line.trim()).filter(Boolean).join('\n');
+    if (text) emit({ type: 'authOutput', message: text });
+  };
+  try {
+    const status = await new CodexAuthManager().login(method, {
+      onOutput: (text) => { buffered += text; flush(); },
+    });
+    flush(true);
+    if (config.auth.type === 'codex-login') client = createLlmClient(config);
+    emit({ type: 'authStatus', ...status });
+  } catch (error) {
+    flush(true);
+    emit({ type: 'authError', message: (error as Error).message });
+  } finally {
+    authBusy = false;
+  }
+}
+
+async function logoutOpenAi() {
+  if (busy || authBusy) {
+    emit({ type: 'authError', message: 'Finish the current model or login operation first.' });
+    return;
+  }
+  authBusy = true;
+  try {
+    await new CodexAuthManager().logout();
+    emit({ type: 'authStatus', configured: false, mode: null });
+  } catch (error) {
+    emit({ type: 'authError', message: (error as Error).message });
+  } finally {
+    authBusy = false;
+  }
 }
 
 init().catch((err) => {

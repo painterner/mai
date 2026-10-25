@@ -18,18 +18,20 @@ operations can access the internet.
 
 ```bash
 npm install
-cp .env.example .env   # then fill in GEMINI_API_KEY (or set API_PROVIDER=openai + OPENAI_API_KEY)
+cp .env.example .env   # fill in Gemini/custom-provider keys as needed
 ```
 
 ### Providers
 
 `providers.json` (in this directory) is the list of providers Mai can talk
-to — each entry has a `name`, a wire `kind` (`"gemini"` or `"openai"`-
-compatible), a `baseUrl`, a default `model`, and an `apiKeyEnv` naming which
-`.env` var holds its key. Ships with `gemini` + `openai`; see
+to. Provider identity (`type`), HTTP protocol (`wireApi`), credential source
+(`auth`), and optional hosted capabilities are independent, so OpenAI and
+third-party Responses/Chat-Completions services reuse the same compatible
+client instead of requiring one client class per vendor. The legacy
+`kind` + `apiKeyEnv` shape is still accepted. Mai ships with Gemini + OpenAI; see
 `providers.example.json` for more (Groq, DeepSeek, OpenRouter, a local
-Ollama server). To add a provider: append an entry and set its `apiKeyEnv`
-var in `.env`. `API_PROVIDER` picks which entry is active at startup by
+Ollama server). To add an env-authenticated provider, append an entry and set
+its auth env var in `.env`. `API_PROVIDER` picks which entry is active at startup by
 `name`; `/model` in the running CLI (or the **Model** button in the GUI)
 opens the interactive provider/model picker. `/model <model>` directly
 selects a model from the current provider, while `/model <model> <provider>`
@@ -45,6 +47,30 @@ none.
 For private endpoints, use `providers.local.json` instead. It has priority
 over `providers.json` in both the workspace and installation directory and is
 gitignored, so local provider URLs never need to enter a public repository.
+
+### OpenAI login and hosted tools
+
+The shipped `openai` entry uses the Responses API and can reuse the account
+already authenticated by Codex. In the CLI run `/login` to see all methods:
+
+```text
+/login status
+/login browser
+/login device
+/login api-key       # reads OPENAI_API_KEY; never accepts the secret as an argument
+/login access-token  # reads CODEX_ACCESS_TOKEN
+/login reuse
+/logout
+```
+
+The desktop toolbar exposes the same choices. Tokens remain in Codex's
+file-backed credential store; Mai asks Codex app-server to refresh expiring
+ChatGPT tokens and never sends refresh tokens to the UI or HTTP API. A plain
+`OPENAI_API_KEY` is accepted as a non-interactive fallback for Docker and CI.
+When `capabilities.webSearch` is enabled, Mai adds OpenAI's hosted
+`web_search` tool, streams its lifecycle, and retains URL citations. See
+[`../../docs/openai-auth.md`](../../docs/openai-auth.md) for configuration,
+security boundaries, and troubleshooting.
 
 The `run_command` tool needs the Rust sandbox sidecar built once:
 
@@ -108,17 +134,17 @@ cross-platform release CI, signing, and the platform support matrix.
 ## How a turn works
 
 1. Your message + conversation history go to the active provider's
-   streaming endpoint (`streamGenerateContent` for Gemini,
-   `/chat/completions` with `stream: true` for OpenAI-compatible) with the
+   streaming endpoint (`streamGenerateContent` for Gemini, `/responses` or
+   `/chat/completions` for the shared OpenAI-compatible client) with the
    workspace tools declared as native function/tool calls — not the
    prompt-hacked "reply with one JSON object" protocol the Rust CLI uses —
    so you get real token-level streaming of the final answer. Both
    providers are implemented against one internal `LlmClient` interface
    (`src/llm/types.ts`); `agent/loop.ts` and everything above it doesn't
-   know or care which one is active. The trickiest part of the OpenAI side:
-   streamed tool-call *arguments* arrive as raw string fragments keyed by
-   index and have to be concatenated before they're valid JSON — Gemini
-   hands you the whole `functionCall` args object in one piece.
+   know or care which one is active. Responses events are translated to the
+   same text/thought/function/hosted-tool/citation events used by the CLI,
+   desktop and HTTP API. Provider `call_id` values and encrypted reasoning
+   items are retained so stateless follow-up tool turns remain valid.
 2. Each function call the model requests is classified by a **risk rule
    engine** ported line-for-line from `crates/mai-rust`'s
    `agent/approval.rs` (`src/agent/approval.ts`): auto-allow, pause for

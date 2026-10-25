@@ -288,6 +288,10 @@ function fixtureConfig(workspace: string, sandboxBinary = '/bin/false'): Config 
   return {
     provider: 'test',
     kind: 'openai',
+    type: 'openai-compatible',
+    wireApi: 'chat-completions',
+    auth: { type: 'env', env: 'TEST_API_KEY' },
+    capabilities: {},
     apiKey: 'fixture-key',
     model: 'test-model',
     baseUrl: 'http://127.0.0.1:1',
@@ -297,8 +301,9 @@ function fixtureConfig(workspace: string, sandboxBinary = '/bin/false'): Config 
     allowShell: true,
     sandboxBinary,
     providers: [{
-      name: 'test', kind: 'openai', baseUrl: 'http://127.0.0.1:1',
-      apiKeyEnv: 'TEST_API_KEY', model: 'test-model',
+      name: 'test', kind: 'openai', type: 'openai-compatible', wireApi: 'chat-completions',
+      baseUrl: 'http://127.0.0.1:1', apiKeyEnv: 'TEST_API_KEY',
+      auth: { type: 'env', env: 'TEST_API_KEY' }, capabilities: {}, model: 'test-model',
     }],
   };
 }

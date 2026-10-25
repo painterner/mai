@@ -49,6 +49,16 @@ export function MessageItem({ message }: { message: Message }) {
           />
         </Box>
       ) : null}
+      {message.citations?.length ? (
+        <Box paddingLeft={2} flexDirection="column">
+          <Text color={theme.dim}>Sources:</Text>
+          {message.citations.map((citation, index) => (
+            <Text key={`${citation.url}-${index}`} color={theme.user}>
+              [{index + 1}] {citation.title ? `${citation.title} — ` : ''}{citation.url}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
     </Box>
   );
 }

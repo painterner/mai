@@ -10,6 +10,13 @@ export interface ToolCallInfo {
   status: ToolStatus;
 }
 
+export interface CitationInfo {
+  url: string;
+  title?: string;
+  startIndex?: number;
+  endIndex?: number;
+}
+
 export interface Message {
   id: string;
   role: Role;
@@ -19,12 +26,23 @@ export interface Message {
   continues?: boolean;
   startsInCode?: boolean;
   tool?: ToolCallInfo;
+  citations?: CitationInfo[];
   timestamp: number;
 }
 
 export type AgentEvent =
   | { type: 'text'; text: string }
   | { type: 'thought'; text: string }
+  | {
+      type: 'hostedTool';
+      id: string;
+      name: string;
+      stage: 'started' | 'running' | 'completed';
+    }
+  | {
+      type: 'citation';
+      citation: { url: string; title?: string; startIndex?: number; endIndex?: number };
+    }
   | { type: 'toolStart'; id: string; name: string; args: Record<string, unknown> }
   | {
       type: 'toolApprovalNeeded';
@@ -65,6 +83,9 @@ export type DaemonEvent =
   | { type: 'modelsError'; message: string }
   | { type: 'modelChanged'; provider: string; model: string; baseUrl: string }
   | { type: 'approvalModeChanged'; mode: ApprovalMode }
+  | { type: 'authStatus'; configured: boolean; mode: string | null; expiresAt?: string; accountId?: string }
+  | { type: 'authOutput'; message: string }
+  | { type: 'authError'; message: string }
   | { type: 'queueChanged'; waiting: number }
   | { type: 'turnStarted'; text: string }
   | AgentEvent;
@@ -78,4 +99,7 @@ export type DaemonCommand =
   | { type: 'listProviders' }
   | { type: 'listModels'; provider: string }
   | { type: 'setModel'; provider: string; model: string }
+  | { type: 'getAuthStatus' }
+  | { type: 'loginOpenAi'; method: 'browser' | 'device' | 'api-key' | 'access-token' | 'reuse' }
+  | { type: 'logoutOpenAi' }
   | { type: 'setApprovalMode'; mode: ApprovalMode };

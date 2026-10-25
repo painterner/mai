@@ -6,9 +6,21 @@ import { InputPrompt } from './components/InputPrompt.js';
 import { StatusBar } from './components/StatusBar.js';
 import { ApprovalPrompt } from './components/ApprovalPrompt.js';
 import { ModelPicker } from './components/ModelPicker.js';
-import { SLASH_COMMANDS, matchIdentifier, parseApprovalCommandArgs, parseModelCommandArgs } from './commands.js';
+import {
+  SLASH_COMMANDS,
+  matchIdentifier,
+  parseApprovalCommandArgs,
+  parseLoginCommandArgs,
+  parseModelCommandArgs,
+} from './commands.js';
 import { loadConfig, resolveGuiBinary, configForProvider, saveState, type Config, type ProviderDef } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
+import {
+  CodexAuthManager,
+  credentialHint,
+  isCredentialConfigured,
+  type CodexAuthStatus,
+} from './llm/auth.js';
 import { ToolRegistry, type Skill } from './agent/tools.js';
 import { runAgentTurn, buildSystemInstruction, type AgentEvent, type ApprovalRequest } from './agent/loop.js';
 import type { ApprovalMode } from './agent/approval.js';
@@ -74,6 +86,7 @@ export default function App() {
   const [pickerStage, setPickerStage] = useState<'provider' | 'model' | null>(null);
   const [pickerOptions, setPickerOptions] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
   const [redrawKey, setRedrawKey] = useState(0);
 
   const pendingRef = useRef<Message[]>([]);
@@ -128,6 +141,7 @@ export default function App() {
           registry.workspacePath,
           registry.skillCatalog,
           approvalModeRef.current,
+          { hostedWebSearch: config.type === 'openai' && config.capabilities.webSearch },
         );
         for (const issue of registry.mcpIssues) {
           pushError(`MCP server "${issue.server}" is unavailable: ${issue.message}`);
@@ -142,11 +156,10 @@ export default function App() {
         }
 
         setReady(true);
-        if (!config.apiKey) {
-          const envVar = config.providers.find((p) => p.name === config.provider)?.apiKeyEnv ?? 'its API key';
+        if (!isCredentialConfigured(config)) {
           pushSystem(
-            `No ${envVar} found for provider "${config.provider}". Add it to a .env file (see ` +
-              '.env.example) or export it in your shell — local commands like /help still work without it.',
+            `Provider "${config.provider}" is not authenticated — ${credentialHint(config.auth)}. ` +
+              'Local commands like /help still work without it.',
           );
         }
       } catch (err) {
@@ -348,6 +361,27 @@ export default function App() {
         }
         break;
       }
+      case '/login': {
+        const request = parseLoginCommandArgs(parts.slice(1));
+        if (request.kind === 'error') pushError(request.message);
+        else if (request.kind === 'show') {
+          pushSystem(
+            'OpenAI login methods:\n' +
+            '/login status       Show the current login\n' +
+            '/login browser      ChatGPT browser login\n' +
+            '/login device       Device-code login\n' +
+            '/login api-key      Read OPENAI_API_KEY from the environment\n' +
+            '/login access-token Read CODEX_ACCESS_TOKEN from the environment\n' +
+            '/login reuse        Reuse and refresh the existing Codex login\n' +
+            '/logout             Remove the file-backed login',
+          );
+        } else if (request.kind === 'status') void showLoginStatus();
+        else void performLogin(request.method);
+        break;
+      }
+      case '/logout':
+        void performLogout();
+        break;
       case '/approval': {
         const request = parseApprovalCommandArgs(parts.slice(1));
         if (request.kind === 'error') {
@@ -365,6 +399,10 @@ export default function App() {
               tools.workspacePath,
               tools.skillCatalog,
               request.mode,
+              {
+                hostedWebSearch: configRef.current?.type === 'openai'
+                  && configRef.current.capabilities.webSearch,
+              },
             );
           }
           pushSystem(`Tool approval mode: ${request.mode}. ${approvalModeDescription(request.mode)}`);
@@ -463,6 +501,66 @@ export default function App() {
     }
   }
 
+  async function showLoginStatus() {
+    try {
+      const status = await new CodexAuthManager().status();
+      pushSystem(formatLoginStatus(status));
+    } catch (error) {
+      pushError(`Could not read Codex login: ${(error as Error).message}`);
+    }
+  }
+
+  async function performLogin(method: 'browser' | 'device' | 'api-key' | 'access-token' | 'reuse') {
+    if (busy || authBusy) {
+      pushError('Finish the current model or login operation before changing authentication.');
+      return;
+    }
+    setAuthBusy(true);
+    pushSystem(`Starting OpenAI login (${method})…`);
+    let outputBuffer = '';
+    const flushOutput = (force = false) => {
+      const lines = outputBuffer.split(/\r?\n/);
+      outputBuffer = force ? '' : lines.pop() ?? '';
+      const complete = force ? lines.concat(outputBuffer ? [outputBuffer] : []) : lines;
+      const text = complete.map((line) => line.trim()).filter(Boolean).join('\n');
+      if (text) pushSystem(text);
+    };
+    try {
+      const manager = new CodexAuthManager();
+      const status = await manager.login(method, {
+        onOutput: (text) => {
+          outputBuffer += text;
+          flushOutput();
+        },
+      });
+      flushOutput(true);
+      const config = configRef.current;
+      if (config?.auth.type === 'codex-login') clientRef.current = createLlmClient(config);
+      pushSystem(`OpenAI login ready. ${formatLoginStatus(status)}`);
+    } catch (error) {
+      flushOutput(true);
+      pushError(`OpenAI login failed: ${(error as Error).message}`);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function performLogout() {
+    if (busy || authBusy) {
+      pushError('Finish the current model or login operation before logging out.');
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      await new CodexAuthManager().logout();
+      pushSystem('Logged out of the file-backed Codex/OpenAI account.');
+    } catch (error) {
+      pushError(`OpenAI logout failed: ${(error as Error).message}`);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
   function queueSkillInvocation(skill: Skill, raw: string, extra: string) {
     // This explicit user action may invoke manual-only skills too. Tell the
     // model that either supported spelling (`/name` or `/skills name`) meets
@@ -547,8 +645,8 @@ export default function App() {
     if (!config || !def) return;
 
     const candidate = configForProvider(config, def);
-    if (!candidate.apiKey) {
-      pushError(`No API key configured for "${def.name}" — set ${def.apiKeyEnv} first.`);
+    if (!isCredentialConfigured(candidate)) {
+      pushError(`Provider "${def.name}" is not authenticated — ${credentialHint(candidate.auth)}.`);
       return;
     }
 
@@ -602,8 +700,8 @@ export default function App() {
     }
 
     const candidate = configForProvider(config, def);
-    if (!candidate.apiKey) {
-      pushError(`No API key configured for "${def.name}" — set ${def.apiKeyEnv} first.`);
+    if (!isCredentialConfigured(candidate)) {
+      pushError(`Provider "${def.name}" is not authenticated — ${credentialHint(candidate.auth)}.`);
       return;
     }
 
@@ -646,6 +744,14 @@ export default function App() {
     next.model = model;
     configRef.current = next;
     clientRef.current = createLlmClient(next);
+    if (toolsRef.current) {
+      systemInstructionRef.current = buildSystemInstruction(
+        toolsRef.current.workspacePath,
+        toolsRef.current.skillCatalog,
+        approvalModeRef.current,
+        { hostedWebSearch: next.type === 'openai' && next.capabilities.webSearch },
+      );
+    }
     saveState(next.workspace, next.provider, next.model);
     pushSystem(`Switched model: provider=${next.provider} model=${model} base url=${next.baseUrl}`);
   }
@@ -866,6 +972,16 @@ function approvalModeDescription(mode: ApprovalMode): string {
     case 'manual':
       return 'Every non-forbidden tool call asks first; forbidden calls are declined.';
   }
+}
+
+function formatLoginStatus(status: CodexAuthStatus): string {
+  if (!status.configured) return 'No usable file-backed Codex/OpenAI login is configured.';
+  const details = [
+    `mode=${status.mode ?? 'unknown'}`,
+    status.expiresAt ? `access token expires=${status.expiresAt}` : '',
+    status.accountId ? `account=${status.accountId}` : '',
+  ].filter(Boolean);
+  return `Codex/OpenAI login: ${details.join(' · ')}`;
 }
 
 /**

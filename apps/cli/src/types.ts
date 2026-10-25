@@ -1,4 +1,4 @@
-export type { Message, Role, ToolCallInfo, ToolStatus } from '@mai/protocol';
+export type { CitationInfo, Message, Role, ToolCallInfo, ToolStatus } from '@mai/protocol';
 
 export interface SlashCommand {
   name: string;

@@ -11,19 +11,36 @@
 export type ContentRole = 'user' | 'model';
 
 export interface FunctionCall {
+  /** Provider call identifier; Responses requires it when returning output. */
+  id?: string;
   name: string;
   args: Record<string, unknown>;
 }
 
 export interface FunctionResponsePart {
+  callId?: string;
   name: string;
   response: Record<string, unknown>;
+}
+
+export interface ProviderStatePart {
+  provider: string;
+  /** Opaque provider item needed to continue a stateless reasoning turn. */
+  item: Record<string, unknown>;
+}
+
+export interface Citation {
+  url: string;
+  title?: string;
+  startIndex?: number;
+  endIndex?: number;
 }
 
 export type Part =
   | { text: string; thought?: boolean }
   | { functionCall: FunctionCall }
-  | { functionResponse: FunctionResponsePart };
+  | { functionResponse: FunctionResponsePart }
+  | { providerState: ProviderStatePart };
 
 export interface Content {
   role: ContentRole;
@@ -32,7 +49,10 @@ export interface Content {
 
 export type StreamEvent =
   | { type: 'text'; text: string; thought: boolean }
-  | { type: 'functionCall'; call: FunctionCall };
+  | { type: 'functionCall'; call: FunctionCall }
+  | { type: 'providerState'; state: ProviderStatePart }
+  | { type: 'hostedTool'; id: string; name: string; stage: 'started' | 'running' | 'completed' }
+  | { type: 'citation'; citation: Citation };
 
 /** Shape handed to the model as a tool/function declaration. */
 export interface ToolDeclaration {

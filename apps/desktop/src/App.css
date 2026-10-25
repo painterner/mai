@@ -269,6 +269,36 @@ body {
   margin-left: 4px;
 }
 
+.message__citations {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.message__citations a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.auth-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.auth-bar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
 .tool-card__title {
   display: flex;
   align-items: center;

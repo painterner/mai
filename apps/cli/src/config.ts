@@ -14,8 +14,27 @@ import dotenv from 'dotenv';
 dotenv.config();
 dotenv.config({ path: path.join(projectRoot(), '.env') });
 
-/** Wire protocol a provider entry speaks — decides which `LlmClient` class handles it. */
+/** Client family. Kept for backwards-compatible providers.json entries. */
 export type ProviderKind = 'gemini' | 'openai';
+
+/** Provider identity, separate from the HTTP wire protocol it exposes. */
+export type ProviderType = 'gemini' | 'openai' | 'openai-compatible';
+export type ProviderWireApi = 'gemini' | 'chat-completions' | 'responses';
+export type ProviderAuthType = 'env' | 'codex-login' | 'none';
+
+export interface ProviderAuthDef {
+  type: ProviderAuthType;
+  /** Environment variable used by `env` authentication. */
+  env?: string;
+  /** Codex's ChatGPT-plan Responses base URL for a reused Codex login. */
+  chatgptBaseUrl?: string;
+}
+
+export interface ProviderCapabilities {
+  webSearch?: boolean;
+  imageGeneration?: boolean;
+  reasoning?: boolean;
+}
 
 /**
  * One entry from `providers.json`. `name` is just a label (shown in
@@ -27,8 +46,13 @@ export type ProviderKind = 'gemini' | 'openai';
 export interface ProviderDef {
   name: string;
   kind: ProviderKind;
+  type: ProviderType;
+  wireApi: ProviderWireApi;
   baseUrl: string;
-  apiKeyEnv: string;
+  /** Legacy alias retained so existing private provider files keep working. */
+  apiKeyEnv?: string;
+  auth: ProviderAuthDef;
+  capabilities: ProviderCapabilities;
   model: string;
 }
 
@@ -39,6 +63,10 @@ export interface Config {
   /** Active provider's `name` from providers.json. */
   provider: string;
   kind: ProviderKind;
+  type: ProviderType;
+  wireApi: ProviderWireApi;
+  auth: ProviderAuthDef;
+  capabilities: ProviderCapabilities;
   apiKey: string;
   model: string;
   baseUrl: string;
@@ -99,18 +127,110 @@ export function loadProviders(): ProviderDef[] {
     throw new Error(`${jsonPath} must be a non-empty JSON array of provider entries.`);
   }
 
-  return raw.map((entry, i) => {
-    const e = entry as Partial<ProviderDef>;
-    for (const field of ['name', 'kind', 'baseUrl', 'apiKeyEnv', 'model'] as const) {
-      if (typeof e[field] !== 'string' || !e[field]) {
-        throw new Error(`${jsonPath}: entry ${i} is missing a valid "${field}" field.`);
+  return raw.map((entry, i) => normalizeProviderDef(entry, `${jsonPath}: entry ${i}`));
+}
+
+/**
+ * Normalizes both the original `{ kind, apiKeyEnv }` provider shape and the
+ * richer provider/auth/protocol shape. Keeping this conversion at the config
+ * boundary means the rest of Mai never needs compatibility branches.
+ */
+export function normalizeProviderDef(entry: unknown, location = 'provider'): ProviderDef {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new Error(`${location} must be an object.`);
+  }
+  const e = entry as Record<string, unknown>;
+  for (const field of ['name', 'baseUrl', 'model'] as const) {
+    if (typeof e[field] !== 'string' || !e[field]) {
+      throw new Error(`${location} is missing a valid "${field}" field.`);
+    }
+  }
+
+  const legacyKind = e.kind;
+  if (legacyKind !== undefined && legacyKind !== 'gemini' && legacyKind !== 'openai') {
+    throw new Error(`${location} has kind "${String(legacyKind)}" — must be "gemini" or "openai".`);
+  }
+  const declaredType = e.type;
+  if (declaredType !== undefined && !['gemini', 'openai', 'openai-compatible'].includes(String(declaredType))) {
+    throw new Error(`${location} has unsupported type "${String(declaredType)}".`);
+  }
+  const inferredKind: ProviderKind = legacyKind === 'gemini' || declaredType === 'gemini' ? 'gemini' : 'openai';
+  const inferredType: ProviderType = declaredType as ProviderType | undefined
+    ?? (inferredKind === 'gemini'
+      ? 'gemini'
+      : String(e.baseUrl).startsWith('https://api.openai.com/')
+        ? 'openai'
+        : 'openai-compatible');
+
+  const wireApi = (e.wireApi ?? (inferredKind === 'gemini' ? 'gemini' : 'chat-completions')) as ProviderWireApi;
+  if (!['gemini', 'chat-completions', 'responses'].includes(wireApi)) {
+    throw new Error(`${location} has unsupported wireApi "${String(wireApi)}".`);
+  }
+  if ((inferredKind === 'gemini') !== (wireApi === 'gemini')) {
+    throw new Error(`${location} has incompatible kind/type and wireApi "${wireApi}".`);
+  }
+
+  const legacyEnv = typeof e.apiKeyEnv === 'string' && e.apiKeyEnv ? e.apiKeyEnv : undefined;
+  let auth: ProviderAuthDef;
+  if (e.auth === undefined) {
+    if (!legacyEnv) throw new Error(`${location} must define auth or apiKeyEnv.`);
+    auth = { type: 'env', env: legacyEnv };
+  } else if (typeof e.auth === 'string') {
+    if (!['env', 'codex-login', 'none'].includes(e.auth)) {
+      throw new Error(`${location}.auth has unsupported type "${e.auth}".`);
+    }
+    auth = { type: e.auth as ProviderAuthType, ...(legacyEnv ? { env: legacyEnv } : {}) };
+  } else if (e.auth && typeof e.auth === 'object' && !Array.isArray(e.auth)) {
+    const value = e.auth as Record<string, unknown>;
+    if (!['env', 'codex-login', 'none'].includes(String(value.type))) {
+      throw new Error(`${location}.auth.type must be "env", "codex-login", or "none".`);
+    }
+    auth = {
+      type: value.type as ProviderAuthType,
+      ...(typeof value.env === 'string' && value.env ? { env: value.env } : legacyEnv ? { env: legacyEnv } : {}),
+      ...(typeof value.chatgptBaseUrl === 'string' && value.chatgptBaseUrl
+        ? { chatgptBaseUrl: value.chatgptBaseUrl.replace(/\/$/, '') }
+        : {}),
+    };
+  } else {
+    throw new Error(`${location}.auth must be a string or object.`);
+  }
+  if (auth.type === 'env' && !auth.env) {
+    throw new Error(`${location}.auth.env (or apiKeyEnv) is required for env authentication.`);
+  }
+  if (auth.type === 'codex-login' && inferredType !== 'openai') {
+    throw new Error(`${location} can use codex-login only when type is "openai".`);
+  }
+
+  let capabilities: ProviderCapabilities = {};
+  if (e.capabilities !== undefined) {
+    if (!e.capabilities || typeof e.capabilities !== 'object' || Array.isArray(e.capabilities)) {
+      throw new Error(`${location}.capabilities must be an object.`);
+    }
+    const value = e.capabilities as Record<string, unknown>;
+    for (const field of ['webSearch', 'imageGeneration', 'reasoning'] as const) {
+      if (value[field] !== undefined && typeof value[field] !== 'boolean') {
+        throw new Error(`${location}.capabilities.${field} must be a boolean.`);
       }
     }
-    if (e.kind !== 'gemini' && e.kind !== 'openai') {
-      throw new Error(`${jsonPath}: entry ${i} ("${e.name}") has kind "${e.kind}" — must be "gemini" or "openai".`);
-    }
-    return { name: e.name!, kind: e.kind, baseUrl: e.baseUrl!, apiKeyEnv: e.apiKeyEnv!, model: e.model! };
-  });
+    capabilities = {
+      ...(typeof value.webSearch === 'boolean' ? { webSearch: value.webSearch } : {}),
+      ...(typeof value.imageGeneration === 'boolean' ? { imageGeneration: value.imageGeneration } : {}),
+      ...(typeof value.reasoning === 'boolean' ? { reasoning: value.reasoning } : {}),
+    };
+  }
+
+  return {
+    name: e.name as string,
+    kind: inferredKind,
+    type: inferredType,
+    wireApi,
+    baseUrl: e.baseUrl as string,
+    ...(legacyEnv ? { apiKeyEnv: legacyEnv } : auth.env ? { apiKeyEnv: auth.env } : {}),
+    auth,
+    capabilities,
+    model: e.model as string,
+  };
 }
 
 /**
@@ -182,7 +302,11 @@ export function configForProvider(base: Config, def: ProviderDef): Config {
     ...base,
     provider: def.name,
     kind: def.kind,
-    apiKey: process.env[def.apiKeyEnv]?.trim() ?? '',
+    type: def.type,
+    wireApi: def.wireApi,
+    auth: def.auth,
+    capabilities: def.capabilities,
+    apiKey: def.auth.type === 'env' && def.auth.env ? process.env[def.auth.env]?.trim() ?? '' : '',
     model: process.env[`${envPrefix}_MODEL`]?.trim() || def.model,
     baseUrl: (process.env[`${envPrefix}_BASE_URL`]?.trim() || def.baseUrl).replace(/\/$/, ''),
   };
@@ -197,6 +321,10 @@ export function loadConfig(): Config {
   const base: Config = {
     provider: def.name,
     kind: def.kind,
+    type: def.type,
+    wireApi: def.wireApi,
+    auth: def.auth,
+    capabilities: def.capabilities,
     apiKey: '',
     model: def.model,
     baseUrl: def.baseUrl,

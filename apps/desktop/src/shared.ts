@@ -38,6 +38,62 @@ export function closeStreaming(msgs: Message[]): Message[] {
 /** Returns a new `TurnState` — never mutates the one passed in. */
 export function applyAgentEvent(state: TurnState, event: AgentEvent): TurnState {
   switch (event.type) {
+    case 'hostedTool': {
+      const existingId = state.toolMessageIds.get(event.id);
+      if (existingId) {
+        return {
+          ...state,
+          messages: state.messages.map((message) =>
+            message.id === existingId
+              ? {
+                  ...message,
+                  tool: {
+                    ...message.tool!,
+                    status: event.stage === 'completed' ? 'done' : 'running',
+                    ...(event.stage === 'completed' ? { output: 'OpenAI hosted tool completed.' } : {}),
+                  },
+                }
+              : message,
+          ),
+        };
+      }
+      const id = genId();
+      const toolMessageIds = new Map(state.toolMessageIds);
+      toolMessageIds.set(event.id, id);
+      return {
+        ...state,
+        assistantId: null,
+        thoughtId: null,
+        toolMessageIds,
+        messages: closeStreaming(state.messages).concat([{
+          id,
+          role: 'tool',
+          content: '',
+          tool: {
+            name: event.name,
+            status: event.stage === 'completed' ? 'done' : 'running',
+            ...(event.stage === 'completed' ? { output: 'OpenAI hosted tool completed.' } : {}),
+          },
+          timestamp: Date.now(),
+        }]),
+      };
+    }
+
+    case 'citation': {
+      const assistantId = state.assistantId
+        ?? [...state.messages].reverse().find((message) => message.role === 'assistant')?.id;
+      if (!assistantId) return state;
+      return {
+        ...state,
+        messages: state.messages.map((message) => {
+          if (message.id !== assistantId) return message;
+          const citations = message.citations ?? [];
+          if (citations.some((citation) => citation.url === event.citation.url)) return message;
+          return { ...message, citations: [...citations, event.citation] };
+        }),
+      };
+    }
+
     case 'thought': {
       if (!state.thoughtId) {
         const id = genId();
