@@ -12,8 +12,9 @@ import {
   parseApprovalCommandArgs,
   parseLoginCommandArgs,
   parseModelCommandArgs,
+  parseResumeCommandArgs,
 } from './commands.js';
-import { loadConfig, resolveGuiBinary, configForProvider, saveState, type Config, type ProviderDef } from './config.js';
+import { loadConfig, loadState, resolveGuiBinary, configForProvider, saveState, type Config, type ProviderDef } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
 import {
   CodexAuthManager,
@@ -28,6 +29,15 @@ import { applyAgentEvent, closeStreaming, createTurnState } from './agent/reduce
 import { readAndClearHandoff, writeHandoff } from './handoff.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
 import type { Message } from './types.js';
+import type { ApiStore } from './api/store.js';
+import {
+  checkpointInteractiveSession,
+  createInteractiveSession,
+  openSessionStore,
+  resolveSession,
+  restoredMessages,
+  sessionLabel,
+} from './session.js';
 import { genId } from './utils.js';
 import { SerialQueue } from './serial-queue.js';
 import {
@@ -56,7 +66,11 @@ interface QueuedTurn {
   userText: string;
 }
 
-export default function App() {
+interface AppProps {
+  resumeSession?: string;
+}
+
+export default function App({ resumeSession }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const { columns, rows } = useTerminalSize();
@@ -83,7 +97,7 @@ export default function App() {
   const [exitArmed, setExitArmed] = useState(false);
   const [approvalRequest, setApprovalRequest] = useState<ApprovalRequest | null>(null);
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('auto');
-  const [pickerStage, setPickerStage] = useState<'provider' | 'model' | null>(null);
+  const [pickerStage, setPickerStage] = useState<'provider' | 'model' | 'session' | null>(null);
   const [pickerOptions, setPickerOptions] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
@@ -96,6 +110,11 @@ export default function App() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const pendingProviderRef = useRef<ProviderDef | null>(null);
   const pendingDefaultModelRef = useRef('');
+  const sessionOptionsRef = useRef(new Map<string, string>());
+  const historyRef = useRef(history);
+  const inputHistoryRef = useRef(inputHistory);
+  const sessionStoreRef = useRef<ApiStore | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
   const terminalSizeRef = useRef({ columns, rows });
   const interruptTransferRef = useRef<Promise<void> | null>(null);
   const shellCommandTailRef = useRef<Promise<void>>(Promise.resolve());
@@ -127,35 +146,72 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const config = loadConfig();
-        configRef.current = config;
-        clientRef.current = createLlmClient(config);
+        let config = loadConfig();
         const registry = await ToolRegistry.create(
           config.workspace,
           { write: true, shell: config.allowShell },
           config.sandboxBinary,
         );
-        if (cancelled) return;
+        if (cancelled) {
+          await registry.close();
+          return;
+        }
         toolsRef.current = registry;
+        const store = openSessionStore(registry.workspacePath);
+        sessionStoreRef.current = store;
+
+        const handoff = await readAndClearHandoff(registry.workspacePath).catch(() => null);
+        const requested = resumeSession === 'last'
+          ? loadState(registry.workspacePath)?.sessionId ?? 'last'
+          : resumeSession;
+        let session = handoff?.sessionId ? store.getSession(handoff.sessionId) : null;
+        if (!session && requested) session = resolveSession(store.listSessions(100), requested);
+        const resumed = Boolean(session || handoff);
+
+        if (!session) {
+          session = createInteractiveSession(store, {
+            provider: config.provider,
+            model: config.model,
+            approvalMode: approvalModeRef.current,
+            client: 'cli',
+          });
+        }
+        sessionIdRef.current = session.id;
+
+        const provider = config.providers.find((entry) =>
+          entry.name.toLowerCase() === session!.provider.toLowerCase());
+        if (provider) config = { ...configForProvider(config, provider), model: session.model };
+        configRef.current = config;
+        clientRef.current = createLlmClient(config);
+
+        if (handoff) {
+          conversationRef.current = handoff.modelContents;
+          replaceHistory(handoff.uiMessages);
+          replaceInputHistory(handoff.inputHistory);
+        } else if (resumed) {
+          conversationRef.current = session.history;
+          replaceHistory(restoredMessages(session));
+          replaceInputHistory(session.inputHistory);
+        }
+        approvalModeRef.current = session.approvalMode;
+        setApprovalMode(session.approvalMode);
         systemInstructionRef.current = buildSystemInstruction(
           registry.workspacePath,
           registry.skillCatalog,
           approvalModeRef.current,
           { hostedWebSearch: config.type === 'openai' && config.capabilities.webSearch },
         );
+        saveState(config.workspace, config.provider, config.model, session.id);
+
+        if (handoff) pushSystem('Resumed the conversation handed off from the GUI.');
+        else if (resumed) pushSystem(`Resumed session ${session.id}.`);
+        else if (resumeSession) pushError(`No unambiguous session matched "${resumeSession}"; started a new session.`);
         for (const issue of registry.mcpIssues) {
           pushError(`MCP server "${issue.server}" is unavailable: ${issue.message}`);
         }
 
-        const handoff = await readAndClearHandoff(registry.workspacePath).catch(() => null);
-        if (handoff) {
-          conversationRef.current = handoff.modelContents;
-          setHistory(handoff.uiMessages);
-          setInputHistory(handoff.inputHistory);
-          pushSystem('Resumed the conversation handed off from the GUI.');
-        }
-
         setReady(true);
+        checkpointSession();
         if (!isCredentialConfigured(config)) {
           pushSystem(
             `Provider "${config.provider}" is not authenticated — ${credentialHint(config.auth)}. ` +
@@ -169,13 +225,16 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [resumeSession]);
 
   useEffect(
     () => () => {
       if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
       abortControllerRef.current?.abort();
       for (const controller of shellAbortControllersRef.current) controller.abort();
+      checkpointSession();
+      sessionStoreRef.current?.close();
+      sessionStoreRef.current = null;
       void toolsRef.current?.close();
     },
     [],
@@ -220,8 +279,41 @@ export default function App() {
     setPending(next);
   }
 
+  function replaceHistory(messages: Message[]) {
+    historyRef.current = messages;
+    setHistory(messages);
+  }
+
   function pushHistory(...messages: Message[]) {
-    setHistory((h) => [...h, ...messages]);
+    const next = [...historyRef.current, ...messages];
+    historyRef.current = next;
+    setHistory(next);
+  }
+
+  function replaceInputHistory(items: string[]) {
+    inputHistoryRef.current = items;
+    setInputHistory(items);
+  }
+
+  function recordInput(value: string) {
+    replaceInputHistory([...inputHistoryRef.current, value].slice(-200));
+  }
+
+  function checkpointSession(client: 'cli' | 'gui' = 'cli') {
+    const store = sessionStoreRef.current;
+    const id = sessionIdRef.current;
+    const config = configRef.current;
+    if (!store || !id || !config) return;
+    checkpointInteractiveSession(store, id, {
+      history: conversationRef.current,
+      uiMessages: [...historyRef.current, ...pendingRef.current],
+      inputHistory: inputHistoryRef.current,
+      approvalMode: approvalModeRef.current,
+      provider: config.provider,
+      model: config.model,
+      client,
+    });
+    saveState(config.workspace, config.provider, config.model, id);
   }
 
   function pushSystem(content: string) {
@@ -246,9 +338,14 @@ export default function App() {
     resolve?.(approved);
   }
 
+  function exitSafely() {
+    checkpointSession();
+    exit();
+  }
+
   function handleCtrlC() {
     if (exitArmed) {
-      exit();
+      exitSafely();
       return;
     }
     setExitArmed(true);
@@ -266,7 +363,7 @@ export default function App() {
   function handleSubmit(raw: string) {
     const value = raw.trim();
     if (!value) return;
-    setInputHistory((h) => [...h, value]);
+    recordInput(value);
 
     const shellCommand = shellCommandFromInput(value, inputMode);
     if (shellCommand) {
@@ -323,6 +420,7 @@ export default function App() {
       } finally {
         shellAbortControllersRef.current.delete(controller);
         setShellCommandCount((count) => Math.max(0, count - 1));
+        checkpointSession();
       }
     });
     shellCommandTailRef.current = task.then(() => undefined, () => undefined);
@@ -342,13 +440,28 @@ export default function App() {
         shellCommandContextRef.current = [];
         for (const controller of shellAbortControllersRef.current) controller.abort();
         setShellCommandCount(0);
-        setHistory([]);
+        replaceHistory([]);
+        replaceInputHistory([]);
         conversationRef.current = [];
         // The transcript already lives in the terminal's scrollback, where
         // React can't reach it — dropping `history` alone leaves every past
         // turn on screen. Wipe it for real.
         redraw();
+        checkpointSession();
         break;
+      case '/new':
+        startNewSession();
+        break;
+      case '/sessions':
+        showSessions();
+        break;
+      case '/resume': {
+        const request = parseResumeCommandArgs(parts.slice(1));
+        if (request.kind === 'error') pushError(request.message);
+        else if (request.kind === 'picker') openSessionPicker();
+        else resumeStoredSession(request.sessionId);
+        break;
+      }
       case '/model':
       case '/model/': {
         const request = parseModelCommandArgs(parts.slice(1));
@@ -406,6 +519,7 @@ export default function App() {
             );
           }
           pushSystem(`Tool approval mode: ${request.mode}. ${approvalModeDescription(request.mode)}`);
+          checkpointSession();
         }
         break;
       }
@@ -485,7 +599,7 @@ export default function App() {
         break;
       case '/exit':
       case '/quit':
-        exit();
+        exitSafely();
         break;
       default: {
         const skills = toolsRef.current?.skillList ?? [];
@@ -499,6 +613,111 @@ export default function App() {
         queueSkillInvocation(skill, raw, parts.slice(1).join(' ').trim());
       }
     }
+  }
+
+  function showSessions() {
+    const sessions = sessionStoreRef.current?.listSessions(50) ?? [];
+    if (!sessions.length) {
+      pushSystem('No persistent sessions exist for this workspace.');
+      return;
+    }
+    pushSystem(sessions.map((session) =>
+      `${session.id}  ${session.updatedAt}  ${session.title || '(untitled)'}  ${session.provider}/${session.model}`,
+    ).join('\n'));
+  }
+
+  function openSessionPicker() {
+    if (busy) {
+      pushError('Finish or interrupt the current turn before resuming another session.');
+      return;
+    }
+    const sessions = sessionStoreRef.current?.listSessions(50) ?? [];
+    if (!sessions.length) {
+      pushSystem('No persistent sessions exist for this workspace.');
+      return;
+    }
+    const labels = sessions.map(sessionLabel);
+    sessionOptionsRef.current = new Map(labels.map((label, index) => [label, sessions[index].id]));
+    setPickerOptions(labels);
+    setPickerStage('session');
+  }
+
+  function selectSessionLabel(label: string) {
+    const id = sessionOptionsRef.current.get(label);
+    setPickerStage(null);
+    if (id) resumeStoredSession(id);
+  }
+
+  function startNewSession() {
+    if (busy) {
+      pushError('Finish or interrupt the current turn before creating a session.');
+      return;
+    }
+    const store = sessionStoreRef.current;
+    const config = configRef.current;
+    if (!store || !config) return;
+    checkpointSession();
+    const session = createInteractiveSession(store, {
+      provider: config.provider,
+      model: config.model,
+      approvalMode: approvalModeRef.current,
+      client: 'cli',
+    });
+    sessionIdRef.current = session.id;
+    conversationRef.current = [];
+    replaceHistory([]);
+    replaceInputHistory([]);
+    updatePending([]);
+    shellCommandContextRef.current = [];
+    saveState(config.workspace, config.provider, config.model, session.id);
+    redraw();
+    pushSystem(`Started new session ${session.id}.`);
+    checkpointSession();
+  }
+
+  function resumeStoredSession(requested: string) {
+    if (busy) {
+      pushError('Finish or interrupt the current turn before resuming another session.');
+      return;
+    }
+    const store = sessionStoreRef.current;
+    const currentConfig = configRef.current;
+    if (!store || !currentConfig) return;
+    const session = resolveSession(store.listSessions(100), requested);
+    if (!session) {
+      pushError(`No unique session matched "${requested}". Use /sessions for full IDs.`);
+      return;
+    }
+    checkpointSession();
+    const provider = currentConfig.providers.find((entry) =>
+      entry.name.toLowerCase() === session.provider.toLowerCase());
+    if (!provider) {
+      pushError(`Session provider "${session.provider}" is not configured.`);
+      return;
+    }
+    const next = { ...configForProvider(currentConfig, provider), model: session.model };
+    configRef.current = next;
+    clientRef.current = createLlmClient(next);
+    conversationRef.current = session.history;
+    replaceHistory(restoredMessages(session));
+    replaceInputHistory(session.inputHistory);
+    updatePending([]);
+    approvalModeRef.current = session.approvalMode;
+    setApprovalMode(session.approvalMode);
+    sessionIdRef.current = session.id;
+    const tools = toolsRef.current;
+    if (tools) {
+      systemInstructionRef.current = buildSystemInstruction(
+        tools.workspacePath,
+        tools.skillCatalog,
+        session.approvalMode,
+        { hostedWebSearch: next.type === 'openai' && next.capabilities.webSearch },
+      );
+    }
+    saveState(next.workspace, next.provider, next.model, session.id);
+    redraw();
+    pushSystem(`Resumed session ${session.id}. Interrupted tools were not replayed.`);
+    checkpointSession();
   }
 
   async function showLoginStatus() {
@@ -597,11 +816,13 @@ export default function App() {
     }
 
     try {
+      checkpointSession('gui');
       await writeHandoff({
         workspace: tools.workspacePath,
-        uiMessages: coalesceStreamFragments(history),
+        sessionId: sessionIdRef.current ?? undefined,
+        uiMessages: coalesceStreamFragments(historyRef.current),
         modelContents: conversationRef.current,
-        inputHistory,
+        inputHistory: inputHistoryRef.current,
       });
     } catch (err) {
       pushError(`Failed to hand off the conversation: ${(err as Error).message}`);
@@ -752,12 +973,14 @@ export default function App() {
         { hostedWebSearch: next.type === 'openai' && next.capabilities.webSearch },
       );
     }
-    saveState(next.workspace, next.provider, next.model);
+    saveState(next.workspace, next.provider, next.model, sessionIdRef.current ?? undefined);
     pushSystem(`Switched model: provider=${next.provider} model=${model} base url=${next.baseUrl}`);
+    checkpointSession();
   }
 
   function cancelPicker() {
     setPickerStage(null);
+    sessionOptionsRef.current.clear();
     pendingProviderRef.current = null;
     pendingDefaultModelRef.current = '';
   }
@@ -846,6 +1069,7 @@ export default function App() {
       await interruptTransferRef.current;
     }
     if (abortControllerRef.current === controller) abortControllerRef.current = null;
+    checkpointSession();
   }
 
   queuedInputWorkerRef.current = async (turn) => {
@@ -855,6 +1079,7 @@ export default function App() {
       ? `${shellContext.join('\n\n---\n\n')}\n\n---\n\nThe user's next message is:\n${turn.userText}`
       : turn.userText;
     pushHistory({ id: genId(), role: 'user', content: turn.displayText, timestamp: Date.now() });
+    checkpointSession();
     await runTurn(userText);
   };
 
@@ -871,6 +1096,7 @@ export default function App() {
     interruptTransferRef.current = transfer;
     void transfer.finally(() => {
       if (interruptTransferRef.current === transfer) interruptTransferRef.current = null;
+      checkpointSession();
     });
 
     if (approvalResolveRef.current) {
@@ -916,6 +1142,14 @@ export default function App() {
             models={pickerOptions}
             current={pendingDefaultModelRef.current}
             onSelect={selectModel}
+            onCancel={cancelPicker}
+          />
+        ) : pickerStage === 'session' ? (
+          <ModelPicker
+            label="Resume a session"
+            models={pickerOptions}
+            current=""
+            onSelect={selectSessionLabel}
             onCancel={cancelPicker}
           />
         ) : (

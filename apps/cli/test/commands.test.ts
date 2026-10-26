@@ -7,6 +7,7 @@ import {
   parseApprovalCommandArgs,
   parseLoginCommandArgs,
   parseModelCommandArgs,
+  parseResumeCommandArgs,
 } from '../src/commands.js';
 
 test('approval command supports all three modes and reports invalid input', () => {
@@ -24,6 +25,15 @@ test('approval modes are available through slash completion', () => {
   assert.deepEqual(matchCommands('/approval s'), [
     { name: '/approval safe', description: 'Use risk rules and ask for review-classified calls' },
   ]);
+});
+
+test('resume command keeps the picker and accepts one session id', () => {
+  assert.deepEqual(parseResumeCommandArgs([]), { kind: 'picker' });
+  assert.deepEqual(parseResumeCommandArgs(['sess_123']), { kind: 'resume', sessionId: 'sess_123' });
+  assert.deepEqual(parseResumeCommandArgs(['one', 'two']), {
+    kind: 'error',
+    message: 'Usage: /resume [session-id]',
+  });
 });
 
 test('model command keeps the no-argument interactive picker', () => {

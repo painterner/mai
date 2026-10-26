@@ -23,6 +23,7 @@ interface ReadyInfo {
   hasApiKey: boolean;
   sandbox: string | null;
   approvalMode: ApprovalMode;
+  sessionId: string;
   mcpIssues?: Array<{ server: string; message: string }>;
 }
 
@@ -65,7 +66,7 @@ export default function App() {
   const [approvalRequest, setApprovalRequest] = useState<ApprovalRequest | null>(null);
   const [inputValue, setInputValue] = useState('');
   const [switching, setSwitching] = useState(false);
-  const [pickerStage, setPickerStage] = useState<'provider' | 'model' | null>(null);
+  const [pickerStage, setPickerStage] = useState<'provider' | 'model' | 'session' | null>(null);
   const [pickerOptions, setPickerOptions] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [autostart, setAutostartState] = useState(false);
@@ -79,6 +80,8 @@ export default function App() {
   const listRef = useRef<HTMLDivElement | null>(null);
   const pendingProviderRef = useRef<string | null>(null);
   const pendingDefaultModelRef = useRef('');
+  const sessionOptionsRef = useRef(new Map<string, string>());
+  const currentSessionLabelRef = useRef('');
 
   function setTurn(next: TurnState) {
     turnRef.current = next;
@@ -157,6 +160,47 @@ export default function App() {
       case 'handoffWritten':
       case 'handoffFailed':
         // Resolved via the switch_to_cli() invoke() call itself, not here.
+        return;
+      case 'sessionsListed': {
+        sessionOptionsRef.current.clear();
+        currentSessionLabelRef.current = '';
+        const options = event.sessions.map((session) => {
+          const shortId = session.id.replace(/^sess_/, '').slice(0, 8);
+          const stamp = session.updatedAt.replace('T', ' ').slice(0, 16);
+          const label = `${shortId} · ${stamp} · ${session.title || '(untitled)'} · ${session.provider}/${session.model}`;
+          sessionOptionsRef.current.set(label, session.id);
+          if (session.id === event.current) currentSessionLabelRef.current = label;
+          return label;
+        });
+        setPickerOptions(options);
+        setPickerStage('session');
+        return;
+      }
+      case 'sessionChanged':
+        setReady((current) => current ? {
+          ...current,
+          sessionId: event.sessionId,
+          provider: event.provider,
+          model: event.model,
+          baseUrl: event.baseUrl,
+          approvalMode: event.approvalMode,
+        } : current);
+        setHistory(event.resumedMessages.length ? event.resumedMessages : [{
+          id: genId(),
+          role: 'system',
+          content: 'New Mai session ready.',
+          timestamp: Date.now(),
+        }]);
+        setTurn(createTurnState());
+        setBusy(false);
+        setApprovalRequest(null);
+        cancelPicker();
+        stickToBottomRef.current = true;
+        return;
+      case 'sessionError':
+        setHistory((messages) => [...messages, {
+          id: genId(), role: 'error', content: event.message, timestamp: Date.now(),
+        }]);
         return;
       case 'providersListed':
         if (event.providers.length === 1) {
@@ -299,6 +343,39 @@ export default function App() {
     await invoke('clear_conversation');
   }
 
+  async function openSessionPicker() {
+    try {
+      await invoke('list_sessions');
+    } catch (err) {
+      setHistory((messages) => [...messages, {
+        id: genId(), role: 'error', content: String(err), timestamp: Date.now(),
+      }]);
+    }
+  }
+
+  async function selectSession(label: string) {
+    const sessionId = sessionOptionsRef.current.get(label);
+    if (!sessionId) return;
+    setPickerStage(null);
+    try {
+      await invoke('resume_session', { sessionId });
+    } catch (err) {
+      setHistory((messages) => [...messages, {
+        id: genId(), role: 'error', content: String(err), timestamp: Date.now(),
+      }]);
+    }
+  }
+
+  async function newSession() {
+    try {
+      await invoke('new_session');
+    } catch (err) {
+      setHistory((messages) => [...messages, {
+        id: genId(), role: 'error', content: String(err), timestamp: Date.now(),
+      }]);
+    }
+  }
+
   // /model-equivalent "Model" button is a two-stage picker: pick a provider
   // (skipped automatically if providers.json only declares one), then pick
   // a model from that provider's freshly-fetched list. Both stages are
@@ -376,6 +453,8 @@ export default function App() {
     setPickerStage(null);
     pendingProviderRef.current = null;
     pendingDefaultModelRef.current = '';
+    sessionOptionsRef.current.clear();
+    currentSessionLabelRef.current = '';
   }
 
   async function switchToCli() {
@@ -460,6 +539,12 @@ export default function App() {
           <button className="btn btn--ghost" onClick={() => void clearConversation()} disabled={!ready}>
             Clear
           </button>
+          <button className="btn btn--ghost" onClick={() => void newSession()} disabled={!ready || busy}>
+            New
+          </button>
+          <button className="btn btn--ghost" onClick={() => void openSessionPicker()} disabled={!ready || busy}>
+            Sessions
+          </button>
           <button
             className="btn btn--ghost"
             onClick={() => void openModelPicker()}
@@ -467,7 +552,7 @@ export default function App() {
           >
             {modelsLoading ? 'Loading…' : 'Model'}
           </button>
-          <button className="btn btn--ghost" onClick={() => void switchToCli()} disabled={!ready || switching}>
+          <button className="btn btn--ghost" onClick={() => void switchToCli()} disabled={!ready || busy || switching}>
             {switching ? 'Switching…' : 'Open in CLI'}
           </button>
         </div>
@@ -480,7 +565,15 @@ export default function App() {
         {!ready && <div className="dim status-line">Starting the agent…</div>}
       </div>
 
-      {pickerStage === 'provider' ? (
+      {pickerStage === 'session' ? (
+        <ModelBar
+          label="Resume a session"
+          models={pickerOptions}
+          current={currentSessionLabelRef.current}
+          onSelect={(label) => void selectSession(label)}
+          onCancel={cancelPicker}
+        />
+      ) : pickerStage === 'provider' ? (
         <ModelBar
           label="Select a provider"
           models={pickerOptions}

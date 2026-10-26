@@ -37,7 +37,14 @@ Run the terminal UI:
 
 ```bash
 npm run dev -w mai-cli
+npm run dev -w mai-cli -- --resume       # continue the last workspace session
 ```
+
+Built binaries also accept `mai --resume [session-id]`, `--continue`, and
+`-r`. In the CLI use `/sessions`, `/resume [session-id]`, and `/new`;
+the desktop toolbar provides **Sessions** and **New**. All frontends share
+`<workspace>/.mai/api.sqlite`, so model/tool history and file changes remain
+available after exit.
 
 The built-in OpenAI provider uses the Responses API, supports hosted web
 search, and can reuse a local Codex/ChatGPT login. Run `/login` in the CLI or

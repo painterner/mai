@@ -13,6 +13,8 @@ import type { Message } from './types.js';
  */
 export interface HandoffPayload {
   workspace: string;
+  /** Optional for compatibility with handoffs written before persistent sessions. */
+  sessionId?: string;
   uiMessages: Message[];
   modelContents: Content[];
   inputHistory: string[];

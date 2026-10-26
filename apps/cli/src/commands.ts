@@ -2,7 +2,10 @@ import type { SlashCommand } from './types.js';
 
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/help', description: 'Show available commands' },
-  { name: '/clear', description: 'Clear the conversation and start a fresh model context' },
+  { name: '/clear', description: 'Clear the active conversation while keeping its session' },
+  { name: '/new', description: 'Create and switch to a new persistent session' },
+  { name: '/sessions', description: 'List recent persistent sessions for this workspace' },
+  { name: '/resume', description: 'Pick a recent session, or use /resume <session-id>' },
   {
     name: '/model',
     description: 'Pick interactively, or use /model <model> [provider] for direct switching',
@@ -92,6 +95,17 @@ export function matchCommands(
 
 function isSlashSafeSkillName(name: string): boolean {
   return /^[A-Za-z0-9_-]+$/.test(name);
+}
+
+export type ResumeCommandRequest =
+  | { kind: 'picker' }
+  | { kind: 'resume'; sessionId: string }
+  | { kind: 'error'; message: string };
+
+export function parseResumeCommandArgs(args: string[]): ResumeCommandRequest {
+  if (args.length === 0) return { kind: 'picker' };
+  if (args.length === 1) return { kind: 'resume', sessionId: args[0] };
+  return { kind: 'error', message: 'Usage: /resume [session-id]' };
 }
 
 export type ModelCommandRequest =

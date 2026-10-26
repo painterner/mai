@@ -60,6 +60,9 @@ pub fn run() {
             approve,
             clear_conversation,
             interrupt_turn,
+            list_sessions,
+            resume_session,
+            new_session,
             switch_to_cli,
             get_ready_info,
             list_providers,
@@ -242,6 +245,23 @@ async fn handle_daemon_line(app: &AppHandle, line: &str) {
             if let (Some(info), Some(mode)) = (ready.as_mut(), value.get("mode")) {
                 info["approvalMode"] = mode.clone();
             }
+        } else if event_type == "sessionChanged" {
+            let state: State<AppState> = app.state();
+            let mut ready = state.ready_info.lock().await;
+            if let Some(info) = ready.as_mut() {
+                for key in [
+                    "sessionId",
+                    "provider",
+                    "model",
+                    "baseUrl",
+                    "approvalMode",
+                    "resumedMessages",
+                ] {
+                    if let Some(value) = value.get(key) {
+                        info[key] = value.clone();
+                    }
+                }
+            }
         }
 
         if event_type == "handoffWritten" || event_type == "handoffFailed" {
@@ -389,6 +409,25 @@ async fn clear_conversation(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 async fn interrupt_turn(state: State<'_, AppState>) -> Result<(), String> {
     write_command(&state, json!({ "type": "interrupt" })).await
+}
+
+#[tauri::command]
+async fn list_sessions(state: State<'_, AppState>) -> Result<(), String> {
+    write_command(&state, json!({ "type": "listSessions" })).await
+}
+
+#[tauri::command]
+async fn resume_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+    write_command(
+        &state,
+        json!({ "type": "resumeSession", "sessionId": session_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn new_session(state: State<'_, AppState>) -> Result<(), String> {
+    write_command(&state, json!({ "type": "newSession" })).await
 }
 
 #[tauri::command]

@@ -378,6 +378,7 @@ export function resolveProviderDef(providers: ProviderDef[], preferredName?: str
 export interface SavedState {
   provider: string;
   model: string;
+  sessionId?: string;
 }
 
 const STATE_DIR = '.mai';
@@ -400,7 +401,11 @@ export function loadState(workspace: string): SavedState | null {
   try {
     const raw = JSON.parse(readFileSync(p, 'utf8'));
     if (raw && typeof raw.provider === 'string' && typeof raw.model === 'string') {
-      return { provider: raw.provider, model: raw.model };
+      return {
+        provider: raw.provider,
+        model: raw.model,
+        ...(typeof raw.sessionId === 'string' && raw.sessionId ? { sessionId: raw.sessionId } : {}),
+      };
     }
   } catch {
     // Corrupt state.json — fall through to "nothing saved" rather than crash.
@@ -409,10 +414,19 @@ export function loadState(workspace: string): SavedState | null {
 }
 
 /** Called after a successful `/model` switch; failures are non-fatal. */
-export function saveState(workspace: string, provider: string, model: string): void {
+export function saveState(
+  workspace: string,
+  provider: string,
+  model: string,
+  sessionId?: string,
+): void {
   try {
     mkdirSync(path.join(workspace, STATE_DIR), { recursive: true });
-    writeFileSync(statePath(workspace), `${JSON.stringify({ provider, model }, null, 2)}\n`);
+    const savedSessionId = sessionId ?? loadState(workspace)?.sessionId;
+    writeFileSync(
+      statePath(workspace),
+      `${JSON.stringify({ provider, model, ...(savedSessionId ? { sessionId: savedSessionId } : {}) }, null, 2)}\n`,
+    );
   } catch {
     // A session that can't persist its pick still works — just won't stick after restart.
   }

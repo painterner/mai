@@ -183,6 +183,11 @@ Run 状态：`queued`、`running`、`waiting_approval`、`completed`、`failed`�
 `cancelled`。API 异常重启时，未完成 Run 会在 SQLite 中标记为 `failed`，已完成会话和事件
 不丢失。
 
+Session 数据库也由本地 CLI 和 Desktop daemon 复用。除 `history` 外，Session 响应还可能
+包含 `uiMessages`、`inputHistory`、`approvalMode` 和 `client`，供交互前端无损恢复
+展示和设置；这些附加字段不会改变现有 API 客户端的请求格式。CLI/Desktop 恢复时不会自动
+重放中断的工具调用。
+
 同一个 Session 可以在模型仍在处理时继续 `POST .../runs`。新 Run 会按提交顺序保持
 `queued`，当前 Run 结束（包括失败或被中止）后逐个启动，并读取前一 Run 完成后保存的最新
 会话历史。不同 Session 的 Run 仍可并行执行。对尚未启动的 Run 调用 `/stop` 会直接将其

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import readline from 'node:readline';
-import { loadConfig, configForProvider, saveState, type Config } from './config.js';
+import { loadConfig, loadState, configForProvider, saveState, type Config } from './config.js';
 import { createLlmClient, type Content, type LlmClient } from './llm/index.js';
 import { CodexAuthManager, credentialHint, isCredentialConfigured } from './llm/auth.js';
 import { ToolRegistry } from './agent/tools.js';
@@ -9,6 +9,16 @@ import type { ApprovalMode } from './agent/approval.js';
 import { readAndClearHandoff, writeHandoff } from './handoff.js';
 import type { Message } from './types.js';
 import { SerialQueue } from './serial-queue.js';
+import { applyAgentEvent, closeStreaming, createTurnState, type TurnState } from './agent/reducer.js';
+import { genId } from './utils.js';
+import type { ApiStore, SessionRecord } from './api/store.js';
+import {
+  checkpointInteractiveSession,
+  createInteractiveSession,
+  openSessionStore,
+  resolveSession,
+  restoredMessages,
+} from './session.js';
 import type { DaemonCommand as InCommand, DaemonEvent as OutEvent } from '@mai/protocol';
 
 /**
@@ -38,9 +48,15 @@ let pendingApprovalResolve: ((approved: boolean) => void) | null = null;
 let currentAbort: AbortController | null = null;
 let busy = false;
 let authBusy = false;
+let store: ApiStore;
+let sessionId = '';
+let uiMessages: Message[] = [];
+let turnState: TurnState = createTurnState();
 const sendQueue = new SerialQueue<string>(
   async (text) => {
+    uiMessages.push({ id: genId(), role: 'user', content: text, timestamp: Date.now() });
     emit({ type: 'turnStarted', text });
+    checkpointSession();
     await runTurn(text);
   },
   ({ waiting }) => emit({ type: 'queueChanged', waiting }),
@@ -57,6 +73,20 @@ function settlePendingApproval(approved: boolean) {
   const resolve = pendingApprovalResolve;
   pendingApprovalResolve = null;
   resolve?.(approved);
+}
+
+function checkpointSession() {
+  if (!store || !sessionId || !config) return;
+  checkpointInteractiveSession(store, sessionId, {
+    history: conversation,
+    uiMessages: [...uiMessages, ...turnState.messages],
+    inputHistory: [],
+    approvalMode,
+    provider: config.provider,
+    model: config.model,
+    client: 'gui',
+  });
+  saveState(config.workspace, config.provider, config.model, sessionId);
 }
 
 function requestApproval(request: ApprovalRequest): Promise<boolean> {
@@ -84,14 +114,22 @@ async function runTurn(userText: string) {
     );
     let step = await generator.next();
     while (!step.done) {
+      turnState = applyAgentEvent(turnState, step.value);
       emit(step.value);
       step = await generator.next();
     }
     if (epoch === conversationEpoch) conversation = step.value ?? conversation;
   } catch (err) {
-    emit({ type: 'error', message: (err as Error).message });
+    const event = { type: 'error' as const, message: (err as Error).message };
+    turnState = applyAgentEvent(turnState, event);
+    emit(event);
   }
 
+  if (epoch === conversationEpoch) {
+    uiMessages.push(...closeStreaming(turnState.messages));
+  }
+  turnState = createTurnState();
+  if (epoch === conversationEpoch) checkpointSession();
   busy = false;
   currentAbort = null;
   settlePendingApproval(false);
@@ -99,25 +137,46 @@ async function runTurn(userText: string) {
 
 async function init() {
   config = loadConfig();
-  client = createLlmClient(config);
   tools = await ToolRegistry.create(
     config.workspace,
     { write: true, shell: config.allowShell },
     config.sandboxBinary,
   );
+  store = openSessionStore(tools.workspacePath);
+
+  const handoff = await readAndClearHandoff(tools.workspacePath).catch(() => null);
+  const savedSessionId = loadState(tools.workspacePath)?.sessionId;
+  let session: SessionRecord | null = handoff?.sessionId ? store.getSession(handoff.sessionId) : null;
+  if (!session) session = resolveSession(store.listSessions(100), savedSessionId ?? 'last');
+  if (!session) {
+    session = createInteractiveSession(store, {
+      provider: config.provider,
+      model: config.model,
+      approvalMode,
+      client: 'gui',
+    });
+  }
+  sessionId = session.id;
+
+  const provider = config.providers.find((entry) =>
+    entry.name.toLowerCase() === session!.provider.toLowerCase());
+  if (provider) config = { ...configForProvider(config, provider), model: session.model };
+  approvalMode = session.approvalMode;
+  if (handoff) {
+    conversation = handoff.modelContents;
+    uiMessages = handoff.uiMessages;
+  } else {
+    conversation = session.history;
+    uiMessages = restoredMessages(session);
+  }
+  client = createLlmClient(config);
   systemInstruction = buildSystemInstruction(
     tools.workspacePath,
     tools.skillCatalog,
     approvalMode,
     { hostedWebSearch: config.type === 'openai' && config.capabilities.webSearch },
   );
-
-  let resumedMessages: Message[] = [];
-  const handoff = await readAndClearHandoff(tools.workspacePath).catch(() => null);
-  if (handoff) {
-    conversation = handoff.modelContents;
-    resumedMessages = handoff.uiMessages;
-  }
+  checkpointSession();
 
   emit({
     type: 'ready',
@@ -128,7 +187,8 @@ async function init() {
     hasApiKey: isCredentialConfigured(config),
     sandbox: config.sandboxBinary,
     approvalMode,
-    resumedMessages,
+    sessionId,
+    resumedMessages: uiMessages,
     mcpIssues: tools.mcpIssues,
   });
 
@@ -153,7 +213,10 @@ async function init() {
         currentAbort?.abort();
         settlePendingApproval(false);
         conversation = [];
+        uiMessages = [];
+        turnState = createTurnState();
         conversationEpoch += 1;
+        checkpointSession();
         break;
       case 'interrupt':
         currentAbort?.abort();
@@ -164,14 +227,34 @@ async function init() {
         settlePendingApproval(false);
         break;
       case 'handoff':
+        uiMessages = cmd.uiMessages;
+        checkpointSession();
         writeHandoff({
           workspace: tools.workspacePath,
-          uiMessages: cmd.uiMessages,
+          sessionId,
+          uiMessages,
           modelContents: conversation,
           inputHistory: [],
         })
           .then(() => emit({ type: 'handoffWritten' }))
           .catch((err) => emit({ type: 'handoffFailed', message: (err as Error).message }));
+        break;
+      case 'listSessions': {
+        const sessions = store.listSessions(50).map((session) => ({
+          id: session.id,
+          title: session.title,
+          provider: session.provider,
+          model: session.model,
+          updatedAt: session.updatedAt,
+        }));
+        emit({ type: 'sessionsListed', sessions, current: sessionId });
+        break;
+      }
+      case 'resumeSession':
+        resumeDaemonSession(cmd.sessionId);
+        break;
+      case 'newSession':
+        newDaemonSession();
         break;
       case 'listProviders':
         emit({ type: 'providersListed', providers: config.providers.map((p) => p.name), current: config.provider });
@@ -224,7 +307,8 @@ async function init() {
           approvalMode,
           { hostedWebSearch: config.type === 'openai' && config.capabilities.webSearch },
         );
-        saveState(config.workspace, config.provider, config.model);
+        saveState(config.workspace, config.provider, config.model, sessionId);
+        checkpointSession();
         emit({ type: 'modelChanged', provider: config.provider, model: config.model, baseUrl: config.baseUrl });
         break;
       }
@@ -253,6 +337,7 @@ async function init() {
           approvalMode,
           { hostedWebSearch: config.type === 'openai' && config.capabilities.webSearch },
         );
+        checkpointSession();
         emit({ type: 'approvalModeChanged', mode: approvalMode });
         break;
     }
@@ -263,11 +348,85 @@ async function init() {
     closing = true;
     currentAbort?.abort();
     settlePendingApproval(false);
+    checkpointSession();
+    store.close();
     void tools.close().finally(() => process.exit(0));
   };
   rl.on('close', shutdown);
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
+}
+
+function resumeDaemonSession(requested: string) {
+  if (busy) {
+    emit({ type: 'sessionError', message: 'Finish or interrupt the current turn before resuming another session.' });
+    return;
+  }
+  const session = resolveSession(store.listSessions(100), requested);
+  if (!session) {
+    emit({ type: 'sessionError', message: `No unique session matched "${requested}".` });
+    return;
+  }
+  const provider = config.providers.find((entry) =>
+    entry.name.toLowerCase() === session.provider.toLowerCase());
+  if (!provider) {
+    emit({ type: 'sessionError', message: `Session provider "${session.provider}" is not configured.` });
+    return;
+  }
+  checkpointSession();
+  config = { ...configForProvider(config, provider), model: session.model };
+  client = createLlmClient(config);
+  conversation = session.history;
+  uiMessages = restoredMessages(session);
+  turnState = createTurnState();
+  approvalMode = session.approvalMode;
+  sessionId = session.id;
+  conversationEpoch += 1;
+  systemInstruction = buildSystemInstruction(
+    tools.workspacePath,
+    tools.skillCatalog,
+    approvalMode,
+    { hostedWebSearch: config.type === 'openai' && config.capabilities.webSearch },
+  );
+  checkpointSession();
+  emit({
+    type: 'sessionChanged',
+    sessionId,
+    provider: config.provider,
+    model: config.model,
+    baseUrl: config.baseUrl,
+    approvalMode,
+    resumedMessages: uiMessages,
+  });
+}
+
+function newDaemonSession() {
+  if (busy) {
+    emit({ type: 'sessionError', message: 'Finish or interrupt the current turn before creating a session.' });
+    return;
+  }
+  checkpointSession();
+  const session = createInteractiveSession(store, {
+    provider: config.provider,
+    model: config.model,
+    approvalMode,
+    client: 'gui',
+  });
+  sessionId = session.id;
+  conversation = [];
+  uiMessages = [];
+  turnState = createTurnState();
+  conversationEpoch += 1;
+  checkpointSession();
+  emit({
+    type: 'sessionChanged',
+    sessionId,
+    provider: config.provider,
+    model: config.model,
+    baseUrl: config.baseUrl,
+    approvalMode,
+    resumedMessages: [],
+  });
 }
 
 async function emitAuthStatus() {

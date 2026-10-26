@@ -117,6 +117,25 @@ bubblewrap/seccomp sandbox。命令在容器内执行，文件修改通过 `/wor
 执行发生在 Desktop 所在电脑。未来即使让 Windows/macOS Desktop 选择 Docker 作为
 Shell 后端，也应明确显示当前执行节点，不能把两种模式混成一个隐式行为。
 
+## 会话持久化与恢复
+
+每个执行节点把会话保存在 workspace 的 `.mai/api.sqlite`；也可以用
+`MAI_API_STATE` 指定文件。CLI、Desktop daemon 和 HTTP API 复用同一套 Session
+结构，因此模型历史、工具结果、provider/model、审批模式和输入历史可以跨进程恢复。
+`.mai/` 已加入 Git 忽略规则。
+
+- CLI：普通 `mai` 新建会话；`mai --resume [session-id]` 恢复；运行中可用
+  `/sessions`、`/resume [session-id]`、`/new`。
+- Desktop：启动时恢复保存的或最近的会话；工具栏 **Sessions**/**New** 切换和新建。
+- Docker：数据库位于 bind-mounted `/workspace/.mai/api.sqlite`，所以重建容器后仍在。
+  若把 `MAI_API_STATE` 改到 workspace 外，必须另行挂载该路径。
+- API：继续使用 `/v1/sessions` 和 `/v1/sessions/{id}/runs`；相同 session ID
+  可以由后续客户端查询历史并继续提交 Run。
+
+恢复只延续已完成并持久化的上下文。进程退出时仍在运行或等待审批的工具调用会显示为
+失败，不会自动重放；交互终端进程也不能跨重启恢复。这样可以避免重启后重复写文件、
+重复发请求或重复执行命令。
+
 ## Mai Desktop
 
 ### 用户体验

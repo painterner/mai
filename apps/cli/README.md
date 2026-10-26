@@ -21,6 +21,33 @@ npm install
 npm start              # first startup creates ~/.mai/providers.json and credentials.env
 ```
 
+### Persistent sessions and resume
+
+CLI, desktop daemon, and HTTP API use the same workspace-local SQLite database:
+`<workspace>/.mai/api.sqlite` (or `MAI_API_STATE`). The directory is ignored by
+Git. Mai checkpoints provider-neutral model history, the rendered transcript,
+submitted-input history, provider/model, and approval mode.
+
+A normal `mai` launch starts a new session. Resume the last active session or
+a specific one with:
+
+```bash
+mai --resume
+mai --resume sess_01234567-...
+mai --continue          # alias for --resume
+mai -r sess_01234567-...
+```
+
+Inside the CLI, `/sessions` lists IDs, `/resume` opens a picker,
+`/resume <id-or-unique-prefix>` switches directly, and `/new` starts a new
+session. `/clear` clears the active session without deleting it. The desktop
+automatically reopens the saved/latest session and exposes **Sessions** and
+**New** in its toolbar. CLI↔GUI handoff preserves the same session ID.
+
+A tool that was running or waiting for approval when the process stopped is
+restored as failed and is **never automatically replayed**. Start it again
+explicitly if it is still wanted.
+
 ### Providers
 
 The bundled `providers.json` is the default list of providers Mai can talk
@@ -312,7 +339,6 @@ terminal.
 ## Not done yet
 
 - `/theme` is still a placeholder — one dark theme only.
-- Input history doesn't persist across runs.
 - The OpenAI-side "thinking" support (`delta.reasoning_content`/`reasoning`,
   for servers like DeepSeek-R1 that add it) is implemented but not tested
   against a real reasoning-model deployment.

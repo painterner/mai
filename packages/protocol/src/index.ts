@@ -72,12 +72,28 @@ export type DaemonEvent =
       hasApiKey: boolean;
       sandbox: string | null;
       approvalMode: ApprovalMode;
+      sessionId: string;
       resumedMessages: Message[];
       mcpIssues: Array<{ server: string; message: string }>;
     }
   | { type: 'fatal'; message: string }
   | { type: 'handoffWritten' }
   | { type: 'handoffFailed'; message: string }
+  | {
+      type: 'sessionsListed';
+      sessions: Array<{ id: string; title: string | null; provider: string; model: string; updatedAt: string }>;
+      current: string;
+    }
+  | {
+      type: 'sessionChanged';
+      sessionId: string;
+      provider: string;
+      model: string;
+      baseUrl: string;
+      approvalMode: ApprovalMode;
+      resumedMessages: Message[];
+    }
+  | { type: 'sessionError'; message: string }
   | { type: 'providersListed'; providers: string[]; current: string }
   | { type: 'modelsListed'; models: string[]; current: string }
   | { type: 'modelsError'; message: string }
@@ -96,6 +112,9 @@ export type DaemonCommand =
   | { type: 'clear' }
   | { type: 'interrupt' }
   | { type: 'handoff'; uiMessages: Message[] }
+  | { type: 'listSessions' }
+  | { type: 'resumeSession'; sessionId: string }
+  | { type: 'newSession' }
   | { type: 'listProviders' }
   | { type: 'listModels'; provider: string }
   | { type: 'setModel'; provider: string; model: string }
